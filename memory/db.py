@@ -100,6 +100,20 @@ _CREATE_TABLES_SQL = "\n".join(
 
 _COMPOSITE_PK_TABLES = ("sources", "claims", "hypotheses", "knowledge_gaps")
 _MIGRATION_ORDER = ("sources", "claims", "hypotheses", "knowledge_gaps")
+
+# SEC-012: Whitelist of table names allowed in dynamic SQL
+_ALLOWED_TABLE_NAMES = {
+    "sessions", "sources", "claims", "hypotheses", "knowledge_gaps",
+    # Legacy backup names used during migration
+    "sources__legacy_backup", "claims__legacy_backup",
+    "hypotheses__legacy_backup", "knowledge_gaps__legacy_backup",
+}
+
+
+def _assert_safe_table_name(name: str) -> None:
+    """Guard against SQL injection via table name interpolation."""
+    if name not in _ALLOWED_TABLE_NAMES:
+        raise ValueError(f"unsafe table name: {name!r}")
 _TABLE_COLUMNS: Dict[str, List[str]] = {
     "sources": [
         "id",
@@ -187,6 +201,7 @@ def _table_exists(conn: sqlite3.Connection, table_name: str) -> bool:
 
 
 def _get_pk_columns(conn: sqlite3.Connection, table_name: str) -> List[str]:
+    _assert_safe_table_name(table_name)
     rows = conn.execute(f"PRAGMA table_info({table_name})").fetchall()
     ordered = sorted(
         (row for row in rows if row["pk"] > 0),
@@ -233,7 +248,9 @@ def _migrate_table_to_composite_pk(
     conn: sqlite3.Connection,
     table_name: str,
 ) -> None:
+    _assert_safe_table_name(table_name)
     backup_table = f"{table_name}__legacy_backup"
+    _assert_safe_table_name(backup_table)
     if _table_exists(conn, backup_table):
         raise RuntimeError(
             f"CRITICAL: Migration blocked; backup table '{backup_table}' already exists."

@@ -23,6 +23,9 @@ class IterationLog:
         self.agent_logs: List[Dict[str, Any]] = []
         self.metrics: Dict[str, Any] = {}
 
+    # SEC-010: Max length for serialized fields in logs
+    LOG_FIELD_MAX_LEN = 500
+
     def log_agent_call(
         self,
         agent_name: str,
@@ -35,11 +38,22 @@ class IterationLog:
         self.agent_logs.append({
             "agent": agent_name,
             "timestamp": datetime.utcnow().isoformat(),
-            "inputs": self._safe_serialize(inputs),
-            "outputs": self._safe_serialize(outputs),
+            "inputs": self._truncate(self._safe_serialize(inputs)),
+            "outputs": self._truncate(self._safe_serialize(outputs)),
             "token_usage": token_usage,
             "execution_time_seconds": round(execution_time, 3),
         })
+
+    @staticmethod
+    def _truncate(value: Any, max_len: int = 500) -> Any:
+        """SEC-010: Truncate large string fields to prevent sensitive data in logs."""
+        if isinstance(value, str) and len(value) > max_len:
+            return value[:max_len] + " ...[truncated]"
+        if isinstance(value, dict):
+            return {k: IterationLog._truncate(v, max_len) for k, v in value.items()}
+        if isinstance(value, list):
+            return [IterationLog._truncate(item, max_len) for item in value]
+        return value
 
     def set_metrics(
         self,

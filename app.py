@@ -6,9 +6,11 @@ Provides API endpoints for running research sessions, streaming progress,
 and retrieving past session reports.
 """
 
+import hmac
 import json
 import logging
 import os
+import re
 import sys
 import threading
 import time
@@ -35,6 +37,37 @@ _session_status: dict[str, dict] = {}
 
 logger = logging.getLogger("aro.web")
 logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(name)s] %(levelname)s: %(message)s")
+
+# ─── Security Constants ──────────────────────────────────────────────
+SESSION_ID_RE = re.compile(r'^session_[a-f0-9]{12}$')
+_ARO_API_KEY = os.getenv("ARO_API_KEY", "")
+MAX_CONCURRENT_SESSIONS = int(os.getenv("ARO_MAX_CONCURRENT", "3"))
+MAX_ITERATIONS_CEILING = 50
+MIN_ITERATIONS = 1
+
+
+@app.before_request
+def require_api_key():
+    """SEC-002: Enforce API key authentication on /api/ routes."""
+    if not request.path.startswith("/api/"):
+        return
+    if not _ARO_API_KEY:
+        return  # key not configured, skip enforcement (dev mode)
+    provided = request.headers.get("X-API-Key", "")
+    if not hmac.compare_digest(provided, _ARO_API_KEY):
+        return jsonify({"error": "unauthorized"}), 401
+
+
+@app.after_request
+def add_security_headers(response):
+    """SEC-007: Add HTTP security response headers."""
+    response.headers["X-Content-Type-Options"] = "nosniff"
+    response.headers["X-Frame-Options"] = "DENY"
+    response.headers["Referrer-Policy"] = "strict-origin-when-cross-origin"
+    response.headers["Permissions-Policy"] = "geolocation=(), microphone=(), camera=()"
+    if not response.headers.get("Content-Security-Policy"):
+        response.headers["Content-Security-Policy"] = "default-src 'self'"
+    return response
 
 
 # ─── Patched logger that emits SSE events ────────────────────────────
@@ -122,9 +155,12 @@ def _run_research(session_id: str, objective: str, mode: str,
         _session_status[session_id]["status"] = "complete"
 
     except Exception as exc:
-        logger.exception("Research session %s failed", session_id)
-        queue.put({"type": "error", "message": str(exc)})
-        _session_status[session_id] = {"status": "error", "error": str(exc)}
+        logger.exception("Research session %s failed: %s", session_id, exc)
+        queue.put({"type": "error", "message": "An internal error occurred. Check server logs."})
+        _session_status[session_id] = {
+            "status": "error", "error": "internal error",
+            "completed_at": time.time(),
+        }
     finally:
         try:
             memory.close()
@@ -137,14 +173,32 @@ def _run_research(session_id: str, objective: str, mode: str,
 
 @app.route("/api/run", methods=["POST"])
 def start_research():
-    data = request.get_json(force=True)
+    # SEC-006: Cap concurrent sessions to prevent DoS
+    active = sum(
+        1 for s in _session_status.values()
+        if isinstance(s, dict) and s.get("status") == "running"
+    )
+    if active >= MAX_CONCURRENT_SESSIONS:
+        return jsonify({"error": "too many concurrent sessions, try again later"}), 429
+
+    data = request.get_json()  # SEC-016: removed force=True for CSRF protection
+    if data is None:
+        return jsonify({"error": "request body must be JSON with Content-Type: application/json"}), 415
     objective = data.get("objective", "").strip()
     if not objective:
         return jsonify({"error": "objective is required"}), 400
 
     mode = data.get("mode", "autonomous")
-    max_iterations = data.get("max_iterations", None)
     runtime_mode = data.get("runtime_mode", "production")
+
+    # SEC-011: Clamp max_iterations to safe range
+    max_iterations = data.get("max_iterations", 10)
+    try:
+        max_iterations = int(max_iterations)
+    except (TypeError, ValueError):
+        max_iterations = 10
+    max_iterations = max(MIN_ITERATIONS, min(max_iterations, MAX_ITERATIONS_CEILING))
+
     session_id = f"session_{uuid.uuid4().hex[:12]}"
 
     queue = Queue()
@@ -163,20 +217,28 @@ def start_research():
 
 @app.route("/api/stream/<session_id>")
 def stream_progress(session_id):
+    # SEC-003: Validate session_id format
+    if not SESSION_ID_RE.match(session_id):
+        return jsonify({"error": "invalid session id"}), 400
+
     queue = _progress_queues.get(session_id)
     if not queue:
         return jsonify({"error": "session not found"}), 404
 
     def generate():
-        while True:
-            try:
-                event = queue.get(timeout=300)
-            except Exception:
-                yield f"data: {json.dumps({'type': 'timeout'})}\n\n"
-                break
-            yield f"data: {json.dumps(event, default=str)}\n\n"
-            if event.get("type") in ("done", "error"):
-                break
+        try:
+            while True:
+                try:
+                    event = queue.get(timeout=300)
+                except Exception:
+                    yield f"data: {json.dumps({'type': 'timeout'})}\n\n"
+                    break
+                yield f"data: {json.dumps(event, default=str)}\n\n"
+                if event.get("type") in ("done", "error"):
+                    break
+        finally:
+            # SEC-013: Clean up queue after stream closes
+            _progress_queues.pop(session_id, None)
 
     return Response(generate(), mimetype="text/event-stream",
                     headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"})
@@ -184,6 +246,9 @@ def stream_progress(session_id):
 
 @app.route("/api/sessions")
 def list_sessions():
+    # SEC-013: Evict stale session state on each list call
+    _evict_old_sessions()
+
     base_dir = Path(__file__).resolve().parent
     logs_dir = base_dir / "logs"
     sessions = []
@@ -217,6 +282,10 @@ def list_sessions():
 
 @app.route("/api/report/<session_id>")
 def get_report(session_id):
+    # SEC-003: Validate session_id format to prevent path traversal
+    if not SESSION_ID_RE.match(session_id):
+        return jsonify({"error": "invalid session id"}), 400
+
     base_dir = Path(__file__).resolve().parent
     report_file = base_dir / "logs" / session_id / "final_report.json"
 
@@ -240,5 +309,22 @@ def serve_react(path):
     return send_from_directory(dist_dir, "index.html")
 
 
+def _evict_old_sessions(max_age_seconds: int = 3600):
+    """SEC-013: Remove stale session state to prevent memory leak."""
+    cutoff = time.time() - max_age_seconds
+    stale = [
+        sid for sid, s in list(_session_status.items())
+        if isinstance(s, dict)
+        and s.get("status") not in ("running", "starting")
+        and s.get("completed_at", float("inf")) < cutoff
+    ]
+    for sid in stale:
+        _session_status.pop(sid, None)
+        _progress_queues.pop(sid, None)
+
+
 if __name__ == "__main__":
-    app.run(host="0.0.0.0", port=5000, debug=True, threaded=True)
+    # SEC-001: debug=False, bind to localhost only
+    host = os.getenv("ARO_HOST", "127.0.0.1")
+    port = int(os.getenv("ARO_PORT", "5000"))
+    app.run(host=host, port=port, debug=False, threaded=True)

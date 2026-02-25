@@ -15,8 +15,10 @@ Sources (all free, no API keys):
 import logging
 import time
 import re
+import ipaddress
 from typing import List, Dict, Optional
 from concurrent.futures import ThreadPoolExecutor, as_completed
+from urllib.parse import urlparse
 
 import requests
 
@@ -29,6 +31,28 @@ FETCH_TIMEOUT = 10           # seconds per page fetch
 MAX_CONTENT_CHARS = 3000     # max chars per page extract
 MAX_RESULTS_PER_SOURCE = 3   # results per search engine per query
 MAX_TOTAL_CONTEXT = 15000    # total chars injected into prompt
+
+# SEC-005: SSRF protection — block requests to internal/private IPs
+BLOCKED_HOSTNAMES = {"localhost", "127.0.0.1", "0.0.0.0", "::1", "169.254.169.254"}
+
+
+def _is_safe_url(url: str) -> bool:
+    """Validate URL is not targeting internal/private networks (SSRF protection)."""
+    if not url or not url.startswith(("http://", "https://")):
+        return False
+    try:
+        hostname = urlparse(url).hostname or ""
+    except Exception:
+        return False
+    if hostname.lower() in BLOCKED_HOSTNAMES:
+        return False
+    try:
+        ip = ipaddress.ip_address(hostname)
+        if ip.is_private or ip.is_loopback or ip.is_link_local or ip.is_reserved:
+            return False
+    except ValueError:
+        pass  # it is a hostname, not an IP address
+    return True
 
 
 # ── DuckDuckGo ───────────────────────────────────────────────────────────────
@@ -144,7 +168,7 @@ def search_arxiv(query: str, max_results: int = MAX_RESULTS_PER_SOURCE) -> List[
     try:
         # arXiv uses Atom/XML API
         search_query = re.sub(r'[^\w\s]', '', query)  # clean special chars
-        url = "http://export.arxiv.org/api/query"
+        url = "https://export.arxiv.org/api/query"
         params = {
             "search_query": f"all:{search_query}",
             "start": 0,
@@ -250,7 +274,8 @@ def search_openalex(query: str, max_results: int = MAX_RESULTS_PER_SOURCE) -> Li
 
 def fetch_page_content(url: str, max_chars: int = MAX_CONTENT_CHARS) -> str:
     """Fetch and extract clean text from a URL using trafilatura."""
-    if not url or not url.startswith("http"):
+    # SEC-005: Block SSRF to private/internal networks
+    if not _is_safe_url(url):
         return ""
     try:
         import trafilatura
