@@ -290,7 +290,19 @@ def get_report(session_id):
         return jsonify({"error": "invalid session id"}), 400
 
     base_dir = Path(__file__).resolve().parent
-    report_file = base_dir / "logs" / session_id / "final_report.json"
+    logs_dir = base_dir / "logs"
+    # Normalize session path and ensure it stays within logs_dir
+    session_dir = (logs_dir / session_id).resolve()
+    try:
+        # Python 3.9+: use is_relative_to for a clear containment check
+        is_within_logs = session_dir.is_relative_to(logs_dir)
+    except AttributeError:
+        # Fallback for older Python versions: compare path parts
+        is_within_logs = logs_dir in session_dir.parents
+    if not is_within_logs:
+        return jsonify({"error": "invalid session id"}), 400
+
+    report_file = session_dir / "final_report.json"
 
     if not report_file.exists():
         return jsonify({"error": "report not found"}), 404
