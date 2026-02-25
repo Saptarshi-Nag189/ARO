@@ -79,15 +79,18 @@ cd ARO
 
 # 2. Set up Python environment
 python -m venv venv
-source venv/bin/activate    # On Windows: venv\Scripts\activate
+source venv/bin/activate    # On Windows: venv\\Scripts\\activate
 pip install -r requirements.txt
 
-# 3. Configure your API key
+# 3. Configure your API key and Security Settings
 cp .env.example .env
-# Edit .env and add your OpenRouter API key
+# Edit .env and add:
+# - OPENROUTER_API_KEY: Your OpenRouter API key
+# - ARO_API_KEY: A secure random string for authenticating API requests
+# - ARO_HOST, ARO_PORT, ARO_MAX_CONCURRENT (optional overrides)
 
 # 4. Build the dashboard UI
-cd ui && npm install && npx vite build && cd ..
+cd ui && npm install && npm run build && cd ..
 ```
 
 ### Running via CLI

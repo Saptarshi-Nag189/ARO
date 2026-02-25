@@ -19,6 +19,7 @@ from pathlib import Path
 from queue import Queue
 
 from flask import Flask, jsonify, request, Response, send_from_directory
+from flask_cors import CORS
 
 # Ensure aro/ is on path
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
@@ -30,6 +31,8 @@ from runtime.logger import SessionLogger
 from agents.orchestrator import Orchestrator
 
 app = Flask(__name__, static_folder="ui/dist", static_url_path="")
+# SEC-008: Explicitly configure CORS to allow only known origins
+CORS(app, resources={r"/api/*": {"origins": ["http://localhost:5173", "http://127.0.0.1:5173", "http://localhost:3000", "http://127.0.0.1:3000"]}})
 
 # In-memory session progress tracking
 _progress_queues: dict[str, Queue] = {}
