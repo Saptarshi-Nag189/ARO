@@ -19,11 +19,13 @@ Security is a high priority for the ARO project. If you discover a vulnerability
 3. If private reporting is disabled, please email the maintainer directly.
 
 ### What to include
+
 - A detailed description of the vulnerability and its impact.
 - Steps to reproduce the issue (including any malicious inputs or configurations).
 - (Optional but helpful) A suggested mitigation or patch.
 
 ### What to expect
+
 - You should expect an initial acknowledgement within **48 hours**.
 - We will triage the issue and determine the severity.
 - If accepted, we will coordinate with you to issue a patch and potentially an advisory crediting your discovery.
