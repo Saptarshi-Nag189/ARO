@@ -360,8 +360,13 @@ def get_report(session_id):
 @app.route("/<path:path>")
 def serve_react(path):
     dist_dir = os.path.join(app.static_folder)
-    if path and os.path.exists(os.path.join(dist_dir, path)):
-        return send_from_directory(dist_dir, path)
+    # Normalize and validate the requested path to prevent path traversal
+    if path:
+        safe_path = os.path.normpath(path)
+        # Disallow absolute paths and any form of directory traversal
+        if not os.path.isabs(safe_path) and not safe_path.startswith(".."):
+            if os.path.exists(os.path.join(dist_dir, safe_path)):
+                return send_from_directory(dist_dir, safe_path)
     return send_from_directory(dist_dir, "index.html")
 
 
