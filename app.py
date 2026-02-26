@@ -359,9 +359,28 @@ def get_report(session_id):
 @app.route("/", defaults={"path": ""})
 @app.route("/<path:path>")
 def serve_react(path):
-    dist_dir = os.path.join(app.static_folder)
-    if path and os.path.exists(os.path.join(dist_dir, path)):
-        return send_from_directory(dist_dir, path)
+    # Use an absolute, normalized base directory for all static files
+    dist_dir = os.path.abspath(app.static_folder)
+
+    if path:
+        # Normalize the user-supplied path segment
+        safe_segment = os.path.normpath(path)
+
+        # Join with the base directory and normalize the result
+        requested_path = os.path.normpath(os.path.join(dist_dir, safe_segment))
+
+        try:
+            # Ensure the requested path is within the static directory
+            if os.path.commonpath([dist_dir, requested_path]) == dist_dir:
+                if os.path.exists(requested_path) and os.path.isfile(requested_path):
+                    # Compute the relative path to serve from dist_dir
+                    rel_path = os.path.relpath(requested_path, dist_dir)
+                    return send_from_directory(dist_dir, rel_path)
+        except ValueError:
+            # On platforms where paths are on different drives, treat as invalid
+            pass
+
+    # Fallback: always serve the React index for invalid or missing paths
     return send_from_directory(dist_dir, "index.html")
 
 
