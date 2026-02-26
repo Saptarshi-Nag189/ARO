@@ -338,13 +338,14 @@ def get_report(session_id):
     base_dir = Path(__file__).resolve().parent
     logs_dir = base_dir / "logs"
     # Normalize session path and ensure it stays within logs_dir
-    session_dir = (logs_dir / session_id).resolve()
+    logs_dir_resolved = logs_dir.resolve()
+    session_dir = (logs_dir_resolved / session_id).resolve()
     try:
         # Python 3.9+: use is_relative_to for a clear containment check
-        is_within_logs = session_dir.is_relative_to(logs_dir)
+        is_within_logs = session_dir.is_relative_to(logs_dir_resolved)
     except AttributeError:
-        # Fallback for older Python versions: compare path parts
-        is_within_logs = logs_dir in session_dir.parents
+        # Fallback for older Python versions: explicitly walk parents
+        is_within_logs = any(parent == logs_dir_resolved for parent in session_dir.parents)
     if not is_within_logs:
         return jsonify({"error": "invalid session id"}), 400
 
