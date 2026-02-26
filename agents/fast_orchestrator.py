@@ -165,7 +165,9 @@ class FastOrchestrator:
             cache_key = search_cache.hash_key("targeted", q)
             cached = search_cache.get(cache_key)
             if cached:
-                tasks.append(asyncio.coroutine(lambda c=cached: c)())
+                async def _return_cached(c=cached):
+                    return c
+                tasks.append(_return_cached())
             else:
                 tasks.append(self._search_single_async(q))
 
@@ -264,10 +266,25 @@ class FastOrchestrator:
 
     def _to_final_report(self, fast: FastReport) -> FinalReport:
         """Convert FastReport to FinalReport structure for API compatibility."""
+        from schemas.knowledge_gaps import KnowledgeGap
+
+        # Convert string gaps to KnowledgeGap objects
+        gaps = [
+            KnowledgeGap(
+                id=f"gap_{i+1}",
+                description=g,
+                severity=0.5,
+            )
+            for i, g in enumerate(fast.knowledge_gaps or [])
+        ]
+
         return FinalReport(
+            session_id=self.memory.session_id,
             research_objective=fast.research_objective,
             executive_summary=fast.executive_summary,
             conclusion=fast.conclusion,
+            mode="fast",
+            knowledge_gaps=gaps,
             total_iterations=1,
             total_tokens_used=self.gateway.total_tokens_used,
             total_execution_time_seconds=fast.execution_time_seconds,

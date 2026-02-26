@@ -151,6 +151,8 @@ def main(
     memory = MemoryService(
         db_path=os.path.join(os.path.dirname(__file__), config.db_path),
         session_id=sid,
+        vector_store_path=os.path.join(os.path.dirname(__file__), config.vector_store_path),
+        enable_cross_session_memory=config.enable_cross_session_memory,
     )
     gateway = ModelGateway(config, session_id=sid, log_dir=logs_root)
     session_logger = SessionLogger(

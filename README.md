@@ -105,6 +105,60 @@ Plan → Web Search → Research → Extract Claims → Skeptic → Synthesize �
 - **Response streaming** — token-by-token streaming via SSE
 - **Modern React dashboard** — glassmorphism UI with live feed, hypothesis deep-dive, agent network map
 
+### Pipeline Comparison
+
+```mermaid
+flowchart TB
+    subgraph Standard["Standard Mode (2-5 min)"]
+        direction TB
+        S1[Planner] --> S2[Web Search]
+        S2 --> S3[Research Agent]
+        S3 --> S4[Claim Extraction]
+        S4 --> S5[Skeptic + Synthesis]
+        S5 --> S6[Innovation?]
+        S6 --> S7[Reflection]
+        S7 -->|Loop 3-10x| S1
+    end
+
+    subgraph Fast["Fast Mode (15-30 sec)"]
+        direction TB
+        F1[Planner + Seed Search] -->|parallel| F2[Targeted Search]
+        F2 --> F3[Single-Pass Synthesis]
+        F3 --> F4[Report]
+    end
+```
+
+### Three-Tier Memory Architecture
+
+```mermaid
+flowchart LR
+    subgraph Tier1["Tier 1: Structured (SQLite)"]
+        direction TB
+        T1A[Sessions]
+        T1B[Claims]
+        T1C[Hypotheses]
+        T1D[Sources]
+        T1E[Knowledge Gaps]
+    end
+
+    subgraph Tier2["Tier 2: Semantic (ChromaDB)"]
+        direction TB
+        T2A["claims collection"]
+        T2B["hypotheses collection"]
+    end
+
+    subgraph Tier3["Tier 3: Transient (In-Process Cache)"]
+        direction TB
+        T3A["Search result cache (TTL: 1h)"]
+        T3B["Embedding cache"]
+    end
+
+    Orchestrator -->|"CRUD (session-scoped)"| Tier1
+    Orchestrator -->|"Semantic search (cross-session)"| Tier2
+    WebSearch -->|"Cache hit?"| Tier3
+    Tier1 -->|"On write, also embed"| Tier2
+```
+
 ---
 
 ## Modes

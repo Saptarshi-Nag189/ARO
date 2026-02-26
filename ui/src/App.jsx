@@ -244,14 +244,14 @@ export default function App() {
           </div>
           <div className="flex gap-2 items-center justify-end">
             <div className="flex items-center bg-card-dark border border-white/10 rounded-xl px-1 p-1 h-9">
-              {['autonomous', 'innovation', 'interactive'].map(m => (
+              {['autonomous', 'fast', 'innovation', 'interactive'].map(m => (
                 <button key={m}
                   className={`px-3 py-1 text-xs font-medium rounded-lg transition-colors capitalize ${
                     mode === m ? 'text-white bg-primary/20' : 'text-slate-400 hover:text-white'
                   }`}
                   onClick={() => setMode(m)}
                   disabled={isRunning}
-                >{m === 'autonomous' ? 'Auto' : m === 'innovation' ? 'Innov' : 'Interactive'}</button>
+                >{m === 'autonomous' ? 'Auto' : m === 'fast' ? 'Fast' : m === 'innovation' ? 'Innov' : 'Interactive'}</button>
               ))}
             </div>
             <input

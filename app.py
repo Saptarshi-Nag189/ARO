@@ -164,20 +164,42 @@ def _run_research(session_id: str, objective: str, mode: str,
         memory = MemoryService(
             db_path=str(base_dir / config.db_path),
             session_id=session_id,
+            vector_store_path=str(base_dir / config.vector_store_path),
+            enable_cross_session_memory=config.enable_cross_session_memory,
         )
         gateway = ModelGateway(config=config, session_id=session_id, log_dir=logs_root)
-        session_logger = SSESessionLogger(
-            log_dir=logs_root,
-            session_id=session_id,
-            mode=config.mode,
-            queue=queue,
-        )
-        orchestrator = Orchestrator(config, memory, gateway, session_logger)
-        orchestrator._sse_queue = queue
 
         _session_status[session_id] = {"status": "running", "objective": objective}
 
-        report = orchestrator.run(research_objective=objective, mode=mode)
+        if mode == "fast":
+            # Fast mode: single-pass async pipeline (15-30s target)
+            import asyncio
+            from runtime.event_bus import EventBus
+            from agents.fast_orchestrator import FastOrchestrator
+
+            event_bus = EventBus()
+            fast_orch = FastOrchestrator(config, memory, gateway, event_bus)
+            report = asyncio.run(fast_orch.run(objective))
+
+            # Persist report to disk so /api/sessions and /api/report can find it
+            fast_logger = SessionLogger(log_dir=logs_root, session_id=session_id, mode="fast")
+            fast_logger.save_final_report(report)
+
+            # Push completion to SSE queue
+            report_data = report.model_dump() if hasattr(report, 'model_dump') else report.__dict__
+            queue.put({"type": "complete", "report": report_data})
+        else:
+            # Standard mode: iterative multi-agent pipeline
+            session_logger = SSESessionLogger(
+                log_dir=logs_root,
+                session_id=session_id,
+                mode=config.mode,
+                queue=queue,
+            )
+            orchestrator = Orchestrator(config, memory, gateway, session_logger)
+            orchestrator._sse_queue = queue
+
+            report = orchestrator.run(research_objective=objective, mode=mode)
 
         _session_status[session_id]["status"] = "complete"
 
