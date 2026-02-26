@@ -1,252 +1,227 @@
 # ARO — Autonomous Research Operator
 
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
+[![Python 3.10+](https://img.shields.io/badge/python-3.10+-blue.svg)](https://www.python.org/downloads/)
+[![Docker Ready](https://img.shields.io/badge/docker-ready-blue.svg)](Dockerfile)
 
-A production-grade, multi-agent research engine built with Google ADK and OpenRouter. ARO autonomously plans research strategies, performs **real web searches** across 5 free engines, extracts verifiable claims, debates contradictions, synthesizes hypotheses, and generates innovation proposals — all with mathematical confidence scoring.
+A multi-agent AI research engine that autonomously plans research strategies, searches the web across 5 free engines, extracts verifiable claims, debates contradictions, synthesizes hypotheses, and generates innovation proposals — with mathematical confidence scoring.
 
-## How It Works
-
-ARO runs an iterative research loop where 7 specialized AI agents collaborate:
-
-1. **Planner Agent** breaks down your research question into sub-questions with search strategies
-2. **Web Search Engine** queries DuckDuckGo, Semantic Scholar, arXiv, OpenAlex & Wikipedia in parallel
-3. **Research Agent** analyzes the real search results and structures findings with source metadata
-4. **Claim Extraction Agent** extracts atomic, verifiable claims — each tagged with source provenance (web-sourced vs training-knowledge)
-5. **Skeptic Agent** identifies contradictions between sources, challenges credibility, and flags knowledge gaps
-6. **Synthesis Agent** forms hypotheses from validated claims, resolving cross-source conflicts
-7. **Reflection Agent** evaluates progress and adjusts strategy for the next iteration
-
-Each iteration refines the knowledge base until termination conditions are met (convergence, max iterations, or budget).
-
-## Architecture
-
-```text
-┌──────────────────────── Root Orchestrator (ADK) ────────────────────────┐
-│                                                                         │
-│   Plan → Web Search → Research → Extract → Skeptic → Synthesize →      │
-│          [Innovate] → Reflect                                           │
-│                                                                         │
-│   ┌──────────┐  ┌──────────┐  ┌──────────┐  ┌──────────┐              │
-│   │ Planner  │  │ Research │  │  Claim   │  │ Skeptic  │              │
-│   │  Agent   │  │  Agent   │  │ Extract  │  │  Agent   │              │
-│   └──────────┘  └──────────┘  └──────────┘  └──────────┘              │
-│   ┌──────────┐  ┌──────────┐  ┌──────────┐                            │
-│   │Synthesis │  │Innovation│  │Reflection│                            │
-│   │  Agent   │  │  Agent   │  │  Agent   │                            │
-│   └──────────┘  └──────────┘  └──────────┘                            │
-│                                                                         │
-│   ┌──────────────┐  ┌──────────────┐  ┌──────────────┐                │
-│   │Model Gateway │  │Memory Service│  │ Eval Engine  │                │
-│   │ (OpenRouter) │  │(SQLite+Graph)│  │(Conf/Risk/   │                │
-│   │              │  │              │  │ Novelty)     │                │
-│   └──────────────┘  └──────────────┘  └──────────────┘                │
-│                                                                         │
-│   ┌──────────────────────────────────────────────────┐                │
-│   │           Web Search Engine (5 sources)           │                │
-│   │  DuckDuckGo · Semantic Scholar · arXiv ·          │                │
-│   │  OpenAlex · Wikipedia · trafilatura               │                │
-│   └──────────────────────────────────────────────────┘                │
-└─────────────────────────────────────────────────────────────────────────┘
-```
-
-## ✨ Key Features
-
-- **7 specialized AI agents** working in a structured, iterative pipeline
-- **Real web search** — no hallucinated sources; every finding comes from actual web results
-- **5 free search engines** (DuckDuckGo, Semantic Scholar, arXiv, OpenAlex, Wikipedia) — no API keys needed
-- **Source provenance tracking** — every claim tagged as `web-sourced` or `training-knowledge`
-- **Cross-source conflict resolution** — the Skeptic agent detects and resolves contradictions across sources
-- **Evidence hierarchy** — peer-reviewed papers > preprints > Wikipedia > web articles > training knowledge
-- **Mathematical scoring** — confidence, epistemic risk, and novelty computed per iteration
-- **Modern React dashboard** — glassmorphism UI with live research feed, hypothesis deep-dive, agent network map, and report export
-- **CLI + Web UI** — run from terminal or browser
-- **Innovation mode** — prior-art scanning, novelty scoring, and patent-grade differentiation proposals
+---
 
 ## Quick Start
 
-### Prerequisites
-
-- Python 3.10+
-- Node.js 18+ (for the dashboard UI)
-- An [OpenRouter API key](https://openrouter.ai/keys) (provides access to 100+ LLMs)
-
-### Installation
+### 1. Clone & Install
 
 ```bash
-# 1. Clone the repository
 git clone https://github.com/Saptarshi-Nag189/ARO.git
 cd ARO
 
-# 2. Set up Python environment
 python -m venv venv
-source venv/bin/activate    # On Windows: venv\\Scripts\\activate
+source venv/bin/activate        # Windows: venv\Scripts\activate
 pip install -r requirements.txt
-
-# 3. Configure your API key and Security Settings
-cp .env.example .env
-# Edit .env and add:
-# - OPENROUTER_API_KEY: Your OpenRouter API key
-# - ARO_API_KEY: A secure random string for authenticating API requests
-# - ARO_HOST, ARO_PORT, ARO_MAX_CONCURRENT (optional overrides)
-
-# 4. Build the dashboard UI
-cd ui && npm install && npm run build && cd ..
 ```
 
-### Running via CLI
+### 2. Configure API Keys
 
 ```bash
-# Autonomous research (default)
-python main.py --objective "What are the latest advances in quantum error correction?" --mode autonomous
+cp .env.example .env
+```
 
-# Innovation mode (with prior-art scan and novelty scoring)
-python main.py --objective "Novel approaches to protein folding prediction" --mode innovation --max-iterations 5
+Edit `.env` with your [OpenRouter API keys](https://openrouter.ai/keys). ARO uses 3 free models — you can use a single key for all or separate keys per model:
+
+| Variable | Model | Used By |
+|---|---|---|
+| `OPENROUTER_API_KEY` | Trinity Large Preview | research, innovation, orchestrator |
+| `OPENROUTER_API_KEY_STEP` | Step 3.5 Flash | planner, claim extraction |
+| `OPENROUTER_API_KEY_GPT_OSS` | GPT-OSS-120B | skeptic, synthesis, reflection |
+
+> **Tip:** All three models are free on OpenRouter. If you only have one key, set `OPENROUTER_API_KEY` and leave the others blank — ARO will use the default key for all agents.
+
+### 3. Run
+
+**CLI (fastest way to test):**
+
+```bash
+# Standard research
+python main.py -o "What are the latest advances in quantum error correction?" -m autonomous
+
+# Fast mode (~30 seconds instead of 2-5 minutes)
+python main.py -o "Impact of LLMs on software engineering" -m fast
+
+# Innovation mode (prior-art scan + novelty scoring)
+python main.py -o "Novel approaches to protein folding prediction" -m innovation -n 5
 
 # Verbose logging
-python main.py -o "Impact of LLMs on software engineering" -m autonomous -v
+python main.py -o "Your question here" -v
 ```
 
-### Running via Web UI
+**Web Dashboard:**
 
 ```bash
+# Build the UI (first time only)
+cd ui && npm install && npm run build && cd ..
+
+# Start the server
 python app.py
 # Open http://localhost:5000
 ```
 
-The dashboard provides:
+**Docker (recommended for deployment):**
 
-- **Score cards** with confidence, risk, and novelty gauges
-- **Hypothesis cards** with supporting/opposing evidence counts
-- **Claims table** with source attribution and credibility scores
-- **Knowledge gaps** with severity indicators
-- **Live research feed** for monitoring active research sessions
-- **Report export** in JSON, Markdown, and HTML formats
+```bash
+docker compose up --build
+# Open http://localhost:5000
+```
+
+---
+
+## How It Works
+
+ARO runs an iterative research loop where **7 specialized AI agents** collaborate, each powered by the model best suited to its task:
+
+```
+Plan → Web Search → Research → Extract Claims → Skeptic → Synthesize → [Innovate] → Reflect → Loop
+```
+
+| Agent | Role | Model |
+|---|---|---|
+| **Planner** | Breaks question into sub-questions with search strategies | Step 3.5 Flash |
+| **Research** | Analyzes real web search results, structures findings | Trinity Large Preview |
+| **Claim Extraction** | Extracts atomic, verifiable claims with source provenance | Step 3.5 Flash |
+| **Skeptic** | Detects contradictions, challenges credibility, flags gaps | GPT-OSS-120B |
+| **Synthesis** | Forms hypotheses from validated claims, resolves conflicts | GPT-OSS-120B |
+| **Innovation** | Generates patent-grade differentiation proposals | Trinity Large Preview |
+| **Reflection** | Meta-analyzes progress, adjusts strategy | GPT-OSS-120B |
+
+### Key Capabilities
+
+- **Real web search** — 5 free engines (DuckDuckGo, Semantic Scholar, arXiv, OpenAlex, Wikipedia), no API keys needed
+- **Source provenance** — every claim tagged as `web-sourced` or `training-knowledge`
+- **Evidence hierarchy** — peer-reviewed > preprints > Wikipedia > web > training knowledge
+- **Cross-session memory** — ChromaDB vector store remembers findings across research sessions
+- **Mathematical scoring** — confidence, epistemic risk, and novelty computed per iteration
+- **4 research modes** — autonomous, interactive, innovation, and fast
+- **Parallel pipeline** — Skeptic ‖ Synthesis and Innovation ‖ Reflection run concurrently (~50s saved over 5 iterations)
+- **Response streaming** — token-by-token streaming via SSE
+- **Modern React dashboard** — glassmorphism UI with live feed, hypothesis deep-dive, agent network map
+
+---
 
 ## Modes
 
-| Mode          | Description                                                         |
-| ------------- | ------------------------------------------------------------------- |
-| `autonomous`  | Fully self-directed research loop                                   |
-| `interactive` | Human override allowed (manual claim validation at each iteration)  |
-| `innovation`  | Requires prior-art scan, computes NoveltyScore, outputs proposals   |
+| Mode | Description | Speed |
+|---|---|---|
+| `autonomous` | Fully self-directed iterative research loop | 2-5 min |
+| `fast` | Single-pass speculative research (planner + search in parallel) | 15-30 sec |
+| `interactive` | Human override at each iteration | Variable |
+| `innovation` | Prior-art scan, novelty scoring, patent-grade proposals | 3-7 min |
+
+---
 
 ## CLI Options
 
-```text
+```
 --objective, -o    Research question (required)
---mode, -m         autonomous / interactive / innovation (default: autonomous)
---max-iterations   Max iterations (default: 10)
+--mode, -m         autonomous / interactive / innovation / fast (default: autonomous)
+--max-iterations   Max research iterations (default: 10)
 --session-id       Custom session ID
---model, -M        Override model (e.g. 'anthropic/claude-3.5-sonnet')
---budget, -b       Budget cap in USD
 --verbose, -v      Debug logging
 ```
 
-## Web Search Sources
-
-All free, no API keys required. Searches run in parallel for maximum speed.
-
-| Source           | Type          | What it finds                                  |
-| ---------------- | ------------- | ---------------------------------------------- |
-| DuckDuckGo       | General web   | Articles, documentation, blog posts            |
-| Semantic Scholar | Academic      | Peer-reviewed papers with citation counts      |
-| arXiv            | Preprints     | Latest research papers with full abstracts     |
-| OpenAlex         | Scholarly     | 250M+ works with abstracts and DOIs            |
-| Wikipedia        | Encyclopedia  | Factual summaries with source links            |
-
-Content extraction is handled by **trafilatura**, which cleanly extracts article text from fetched web pages (no raw HTML sent to the LLM).
-
-## Agent Details
-
-### Planner Agent
-
-Breaks the research objective into prioritized sub-questions, each with a recommended search strategy. Re-plans after each iteration based on the Reflection Agent's strategy adjustments.
-
-### Research Agent
-
-Receives real web search results injected into its prompt. Analyzes and structures findings with exact source titles and URLs. Rates credibility based on source type (peer-reviewed: 0.85–0.95, arXiv: 0.7–0.85, Wikipedia: 0.6–0.75, web: 0.5–0.7, training knowledge: 0.3–0.5).
-
-### Claim Extraction Agent
-
-Parses research findings into atomic, verifiable claims (subject → relation → object). Tags each claim with source provenance (`web-sourced` or `training-knowledge`). Extracts both sides when sources conflict — never merges contradictory information.
-
-### Skeptic Agent
-
-Critically evaluates all claims and hypotheses. Identifies cross-source contradictions (e.g., a web article says X but an academic paper says Y). Applies an evidence hierarchy: peer-reviewed > preprints > Wikipedia > web > training knowledge. Suggests specific search queries to resolve knowledge gaps.
-
-### Synthesis Agent
-
-Forms hypotheses backed by multiple claims. Weighs web-sourced evidence higher. When sources conflict, creates hypotheses for both positions and notes the disagreement. Merges near-duplicate claims, preferring the version from the most credible source.
-
-### Innovation Agent
-
-(Innovation mode only) Generates patent-grade differentiation proposals by analyzing findings against prior art. Computes novelty scores and identifies unique angles.
-
-### Reflection Agent
-
-Meta-analyzes iteration progress. Advises whether to continue or stop. Suggests strategy adjustments (e.g., "focus on gap X" or "search for contradictory evidence on hypothesis Y").
+---
 
 ## Project Structure
 
-```text
+```
 aro/
 ├── agents/                    # AI Agent implementations
-│   ├── base_agent.py             # Abstract base class (schema-validated, JSON-only)
-│   ├── orchestrator.py           # Root orchestrator (pipeline controller)
-│   ├── planner_agent.py          # Research planning with sub-questions
-│   ├── research_agent.py         # Analyzes real web search results
-│   ├── claim_extraction_agent.py # Extracts atomic claims with provenance
-│   ├── skeptic_agent.py          # Cross-source conflict resolution
-│   ├── synthesis_agent.py        # Hypothesis formation with evidence weighting
+│   ├── orchestrator.py           # Pipeline controller (parallel Skeptic ‖ Synthesis)
+│   ├── fast_orchestrator.py      # Single-pass fast mode pipeline
+│   ├── prompt_builder.py         # Centralized prompt construction
+│   ├── data_processor.py         # Source/claim/hypothesis persistence
+│   ├── planner_agent.py          # Research planning
+│   ├── research_agent.py         # Web search analysis
+│   ├── claim_extraction_agent.py # Atomic claim extraction
+│   ├── skeptic_agent.py          # Contradiction detection
+│   ├── synthesis_agent.py        # Hypothesis formation
 │   ├── innovation_agent.py       # Patent-grade proposals
-│   └── reflection_agent.py       # Meta-analysis and strategy adjustment
-├── tools/                     # External tool integrations
-│   ├── web_search.py             # DuckDuckGo, Semantic Scholar, arXiv, OpenAlex, Wikipedia
-│   ├── prior_art_tool.py         # Prior art scanning
-│   └── search_tool.py            # Search abstraction layer
-├── memory/                    # Persistent memory (SQLite + NetworkX)
-│   ├── db.py                     # Schema & connection
-│   ├── claim_store.py            # Claims CRUD + deduplication
-│   ├── hypothesis_graph.py       # Hypothesis graph
-│   ├── source_registry.py        # Source management
-│   └── memory_service.py         # Unified facade
+│   └── reflection_agent.py       # Meta-analysis
+├── memory/                    # Persistent memory
+│   ├── memory_service.py         # Unified facade (guardrails + vector indexing)
+│   ├── vector_store.py           # ChromaDB cross-session semantic memory
+│   ├── db.py                     # SQLite schema + migration
+│   ├── claim_store.py            # Claims CRUD
+│   ├── hypothesis_graph.py       # NetworkX hypothesis graph
+│   └── source_registry.py        # Source management
 ├── runtime/                   # Runtime services
-│   ├── model_gateway.py          # OpenRouter API wrapper
+│   ├── model_gateway.py          # OpenRouter API (sync + async + streaming)
+│   ├── cache.py                  # TTL cache (search, embeddings, LLM responses)
+│   ├── event_bus.py              # In-process event system for SSE
 │   └── logger.py                 # Structured JSON logging
 ├── evaluation/                # Mathematical scoring
 │   ├── confidence.py             # HypothesisConfidence
 │   ├── risk.py                   # EpistemicRisk
 │   ├── novelty.py                # NoveltyScore
-│   └── termination.py            # Termination conditions
+│   ├── termination.py            # Termination conditions
+│   └── metrics_engine.py         # Per-iteration metrics computation
+├── tools/                     # External integrations
+│   ├── web_search.py             # 5-engine parallel web search
+│   ├── prior_art_tool.py         # Prior art scanning
+│   └── search_tool.py            # Search abstraction
 ├── schemas/                   # Pydantic models
-│   ├── agent_io.py               # Agent input/output schemas
-│   ├── claims.py                 # Claim data model
-│   ├── hypotheses.py             # Hypothesis data model
-│   ├── sources.py                # Source data model
-│   ├── knowledge_gaps.py         # Knowledge gap data model
-│   └── reports.py                # Final report structure
-├── ui/                        # React + Vite + Tailwind CSS dashboard
-│   └── src/
-│       ├── App.jsx               # Main dashboard with sidebar navigation
-│       ├── AgentNetworkMap.jsx    # Agent network visualization
-│       ├── HypothesisDeepDive.jsx # Hypothesis detail view
-│       ├── KnowledgeBase.jsx      # Cross-session search
-│       ├── InteractiveCenter.jsx  # Live research terminal
-│       └── ReportExport.jsx       # Export to JSON/Markdown/HTML
+├── ui/                        # React + Vite dashboard
 ├── docs/                      # Documentation
-│   ├── system_architecture.md
-│   ├── mathematical_models.md
-│   ├── agent_contracts.md
-│   └── reasoning_mode.md
-├── scripts/                   # CI/CD scripts
-│   └── ci_self_audit_gate.py     # Self-audit gate for CI
-├── app.py                     # Flask web server (UI + API)
+├── app.py                     # Flask web server + /api/health
 ├── main.py                    # CLI entry point
-├── config.py                  # Configuration
-├── requirements.txt           # Python dependencies
-├── .env.example               # API key template
-└── LICENSE                    # MIT License
+├── config.py                  # Multi-model configuration
+├── Dockerfile                 # Multi-stage production build
+├── docker-compose.yml         # Local dev stack
+└── requirements.txt           # Python dependencies
 ```
+
+---
+
+## Deployment
+
+### Docker (Recommended)
+
+```bash
+# Build and run
+docker compose up --build
+
+# Or manually
+docker build -t aro .
+docker run -p 5000:5000 --env-file .env aro
+```
+
+The Docker image uses:
+- **Python 3.12 slim** + multi-stage build (~250MB)
+- **Gunicorn** with 4 gthread workers (300s timeout for long research sessions)
+- Built-in **health check** at `/api/health`
+- Persistent **vector store** volume for cross-session memory
+
+### Health Check
+
+```bash
+curl http://localhost:5000/api/health
+# {"status":"ok","version":"2.0.0","active_sessions":0,"max_sessions":3,"uptime_seconds":42.1}
+```
+
+---
+
+## Environment Variables
+
+| Variable | Required | Description |
+|---|---|---|
+| `OPENROUTER_API_KEY` | ✅ | Default API key (Trinity Large Preview) |
+| `OPENROUTER_API_KEY_STEP` | Optional | API key for Step 3.5 Flash (falls back to default) |
+| `OPENROUTER_API_KEY_GPT_OSS` | Optional | API key for GPT-OSS-120B (falls back to default) |
+| `ARO_API_KEY` | Optional | Protect `/api/` endpoints (leave empty to disable auth) |
+| `ARO_HOST` | Optional | Server bind address (default: `127.0.0.1`) |
+| `ARO_PORT` | Optional | Server port (default: `5000`) |
+| `ARO_MAX_CONCURRENT` | Optional | Max concurrent research sessions (default: `3`) |
+
+---
 
 ## Guardrails
 
@@ -256,20 +231,9 @@ aro/
 - ✅ Source provenance tracked (web-sourced vs training-knowledge)
 - ✅ Cross-source contradictions detected and resolved
 - ✅ Evidence hierarchy enforced across all agents
-- ✅ MaxDocsPerIteration configurable
-- ✅ MaxIterations configurable
-- ✅ MaxTokensPerCall configurable
-- ✅ Budget cap in USD
+- ✅ Reasoning traces isolated — never leak into production output
 
-## Mathematical Models
-
-ARO uses three core metrics computed at each iteration:
-
-- **Hypothesis Confidence** — weighted average of supporting vs opposing evidence, factoring in source credibility
-- **Epistemic Risk** — measures remaining uncertainty based on knowledge gaps and claim variance
-- **Novelty Score** — how novel the findings are relative to prior art (innovation mode)
-
-See [docs/mathematical_models.md](docs/mathematical_models.md) for the full formulas and derivations.
+---
 
 ## Documentation
 
@@ -277,6 +241,9 @@ See [docs/mathematical_models.md](docs/mathematical_models.md) for the full form
 - [Mathematical Models](docs/mathematical_models.md)
 - [Agent Contracts](docs/agent_contracts.md)
 - [Reasoning Mode](docs/reasoning_mode.md)
+- [Security Policy](SECURITY.md)
+
+---
 
 ## License
 

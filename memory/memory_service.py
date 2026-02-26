@@ -15,6 +15,7 @@ from memory.db import initialize_database
 from memory.claim_store import ClaimStore
 from memory.hypothesis_graph import HypothesisGraph
 from memory.source_registry import SourceRegistry
+from memory.vector_store import VectorStore
 from schemas.claims import Claim
 from schemas.hypotheses import Hypothesis
 from schemas.knowledge_gaps import KnowledgeGap
@@ -29,12 +30,22 @@ class MemoryService:
       - No hypothesis without supporting claims
     """
 
-    def __init__(self, db_path: str = "aro_memory.db", session_id: Optional[str] = None):
+    def __init__(self, db_path: str = "aro_memory.db", session_id: Optional[str] = None,
+                 vector_store_path: str = "vector_store",
+                 enable_cross_session_memory: bool = True):
         self.conn = initialize_database(db_path)
         self.session_id = session_id or f"session_{uuid.uuid4().hex[:12]}"
         self.claim_store = ClaimStore(self.conn, self.session_id)
         self.hypothesis_graph = HypothesisGraph(self.conn, self.session_id)
         self.source_registry = SourceRegistry(self.conn, self.session_id)
+
+        # Cross-session semantic memory (§4.1 / §5)
+        self._enable_vector = enable_cross_session_memory
+        if self._enable_vector:
+            self.vector_store = VectorStore(persist_dir=vector_store_path)
+        else:
+            self.vector_store = VectorStore.__new__(VectorStore)
+            self.vector_store._available = False
 
     # ─── Session Management ───────────────────────────────────────────────
 
@@ -87,7 +98,19 @@ class MemoryService:
                 f"GUARDRAIL VIOLATION: Cannot add claim without valid source. "
                 f"Source '{claim.source_id}' not found. Register the source first."
             )
-        return self.claim_store.add_claim(claim)
+        persisted = self.claim_store.add_claim(claim)
+
+        # Also index in vector store for cross-session retrieval
+        if self._enable_vector and self.vector_store.available:
+            text = f"{getattr(claim, 'subject', '')} {getattr(claim, 'relation', '')} {getattr(claim, 'object', '')}" if hasattr(claim, 'subject') else str(claim.text if hasattr(claim, 'text') else claim.claim_text)
+            self.vector_store.index_claim(
+                claim_id=persisted.id if hasattr(persisted, 'id') else str(persisted),
+                text=text,
+                session_id=self.session_id,
+                confidence=getattr(claim, 'confidence_estimate', 0.5),
+                source_type="web",
+            )
+        return persisted
 
     def get_claim(self, claim_id: str) -> Optional[Claim]:
         """Get a claim by ID."""
@@ -120,7 +143,18 @@ class MemoryService:
                     f"GUARDRAIL VIOLATION: Supporting claim '{claim_id}' "
                     f"not found in database."
                 )
-        return self.hypothesis_graph.add_hypothesis(hypothesis)
+        persisted = self.hypothesis_graph.add_hypothesis(hypothesis)
+
+        # Also index in vector store for cross-session retrieval
+        if self._enable_vector and self.vector_store.available:
+            text = hypothesis.statement if hasattr(hypothesis, 'statement') else str(hypothesis)
+            self.vector_store.index_hypothesis(
+                hyp_id=persisted.id if hasattr(persisted, 'id') else str(persisted),
+                statement=text,
+                session_id=self.session_id,
+                confidence=getattr(hypothesis, 'confidence', 0.5),
+            )
+        return persisted
 
     def update_hypothesis(self, hypothesis: Hypothesis) -> Hypothesis:
         """Update an existing hypothesis."""
@@ -231,6 +265,32 @@ class MemoryService:
     def close(self) -> None:
         """Close the database connection."""
         self.conn.close()
+
+    # ─── Cross-Session Knowledge Retrieval ─────────────────────────────────
+
+    def get_prior_knowledge(self, query: str, top_k: int = 10) -> List[Dict]:
+        """Retrieve relevant claims from past sessions."""
+        if not self._enable_vector or not self.vector_store.available:
+            return []
+        return self.vector_store.search_prior_claims(
+            query=query, top_k=top_k,
+            exclude_session=self.session_id,
+        )
+
+    def get_prior_hypotheses(self, query: str, top_k: int = 5) -> List[Dict]:
+        """Retrieve relevant hypotheses from past sessions."""
+        if not self._enable_vector or not self.vector_store.available:
+            return []
+        return self.vector_store.search_prior_hypotheses(
+            query=query, top_k=top_k,
+            exclude_session=self.session_id,
+        )
+
+    def get_vector_stats(self) -> Dict:
+        """Get vector store stats for health check."""
+        if not self._enable_vector or not self.vector_store.available:
+            return {"available": False}
+        return self.vector_store.get_stats()
 
     @staticmethod
     def _row_to_gap(row: sqlite3.Row) -> KnowledgeGap:

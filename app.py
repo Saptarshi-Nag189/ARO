@@ -54,11 +54,35 @@ def require_api_key():
     """SEC-002: Enforce API key authentication on /api/ routes."""
     if not request.path.startswith("/api/"):
         return
+    # Health check doesn't need auth
+    if request.path == "/api/health":
+        return
     if not _ARO_API_KEY:
         return  # key not configured, skip enforcement (dev mode)
     provided = request.headers.get("X-API-Key", "")
     if not hmac.compare_digest(provided, _ARO_API_KEY):
         return jsonify({"error": "unauthorized"}), 401
+
+
+# ─── Health Check (audit §4.5) ─────────────────────────────────────────
+_start_time = time.time()
+
+
+@app.route("/api/health")
+def health_check():
+    """Health endpoint for load balancer readiness/liveness probes."""
+    uptime = time.time() - _start_time
+    active_sessions = sum(
+        1 for s in _session_status.values()
+        if s.get("status") == "running"
+    )
+    return jsonify({
+        "status": "ok",
+        "version": "2.0.0",
+        "active_sessions": active_sessions,
+        "max_sessions": MAX_CONCURRENT_SESSIONS,
+        "uptime_seconds": round(uptime, 1),
+    })
 
 
 @app.after_request

@@ -247,6 +247,67 @@ class ModelGateway:
             await self._async_client.aclose()
             self._async_client = None
 
+    async def call_async_stream(
+        self,
+        agent_name: str,
+        messages: List[Dict[str, str]],
+        system_prompt: Optional[str] = None,
+    ):
+        """
+        Streaming version of call_async (audit §4.3.3).
+        Yields content deltas as they arrive from the LLM.
+
+        Usage:
+            async for chunk in gateway.call_async_stream("agent", messages):
+                print(chunk, end="", flush=True)
+        """
+        model_config = self.config.get_model_config(agent_name)
+        client = self._get_async_client()
+        api_key = self.config.get_api_key_for_model(model_config.model_id)
+
+        full_messages = []
+        if system_prompt:
+            full_messages.append({"role": "system", "content": system_prompt})
+        full_messages.extend(messages)
+
+        headers = {
+            "Authorization": f"Bearer {api_key}",
+            "Content-Type": "application/json",
+        }
+        payload = {
+            "model": model_config.model_id,
+            "messages": full_messages,
+            "temperature": model_config.temperature,
+            "max_tokens": model_config.max_tokens,
+            "stream": True,
+        }
+
+        try:
+            async with client.stream(
+                "POST",
+                self.base_url,
+                headers=headers,
+                content=json.dumps(payload),
+            ) as response:
+                response.raise_for_status()
+                async for line in response.aiter_lines():
+                    if not line or not line.startswith("data: "):
+                        continue
+                    data = line[6:]  # Strip "data: " prefix
+                    if data.strip() == "[DONE]":
+                        break
+                    try:
+                        chunk = json.loads(data)
+                        delta = chunk.get("choices", [{}])[0].get("delta", {})
+                        content = delta.get("content", "")
+                        if content:
+                            yield content
+                    except json.JSONDecodeError:
+                        continue
+        except Exception as e:
+            logger.error("Streaming failed for %s: %s", agent_name, e)
+            raise ModelGatewayError(f"Streaming failed: {e}")
+
     def call(
         self,
         agent_name: str,

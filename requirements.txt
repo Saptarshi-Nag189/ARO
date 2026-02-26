@@ -12,14 +12,20 @@ httpx==0.28.1
 networkx==3.6.1
 sqlalchemy==2.0.46
 
+# ── Vector Memory ───────────────────
+chromadb>=1.0.0
+
 # ── Web Search ──────────────────────
-duckduckgo-search>=7.0
+duckduckgo-search==7.3.2
 trafilatura==2.0.0
 wikipedia==1.4.0
 
 # ── Configuration ───────────────────
 python-dotenv==1.2.1
 click==8.3.1
+
+# ── Production Server ──────────────
+gunicorn>=22.0.0
 
 # ── Dev / Testing ───────────────────
 pytest>=7.0

@@ -24,6 +24,9 @@ env/
 *.db-wal
 *.sqlite3
 
+# Vector Store (ChromaDB persistence)
+vector_store/
+
 # Logs
 logs/
 *.log

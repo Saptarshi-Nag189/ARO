@@ -1,0 +1,33 @@
+# ==============================================================================
+# ARO — Docker Compose (local development stack)
+# ==============================================================================
+# Usage:
+#   docker compose up --build        # Build and start
+#   docker compose up -d             # Start in background
+#   docker compose logs -f aro       # Follow logs
+#   docker compose down              # Stop all
+# ==============================================================================
+
+services:
+  aro:
+    build: .
+    ports:
+      - "5000:5000"
+    env_file: .env
+    environment:
+      - FLASK_ENV=production
+      - ARO_LOG_LEVEL=INFO
+    volumes:
+      - ./logs:/app/logs
+      - vector_data:/app/vector_store
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:5000/api/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 15s
+
+volumes:
+  vector_data:
+    driver: local
