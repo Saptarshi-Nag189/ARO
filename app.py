@@ -370,8 +370,9 @@ def serve_react(path):
         requested_path = os.path.normpath(os.path.join(dist_dir, safe_segment))
 
         try:
-            # Ensure the requested path is within the static directory
-            if os.path.commonpath([dist_dir, requested_path]) == dist_dir:
+            # Normalize base path and ensure requested path stays within it
+            base_path = os.path.normpath(dist_dir)
+            if requested_path.startswith(base_path + os.sep):
                 if os.path.exists(requested_path) and os.path.isfile(requested_path):
                     # Compute the relative path to serve from dist_dir
                     rel_path = os.path.relpath(requested_path, dist_dir)
