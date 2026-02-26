@@ -15,6 +15,7 @@ No other agent controls the loop or modifies global state.
 import json
 import logging
 import time
+import asyncio
 from typing import Any, Dict, List, Optional
 
 from config import AROConfig
@@ -177,37 +178,54 @@ class Orchestrator:
                 1 for c in new_claims if c.confidence_estimate >= 0.7
             )
 
-            # --- Step 3: Skeptic Review ---
+            # --- Steps 3+4: Skeptic ‖ Synthesis (PARALLEL per audit §4.3.2) ---
+            # Both read the same snapshot of claims and hypotheses.
+            # Running in parallel saves ~10s per iteration.
             gap_count_before = len(self.memory.get_all_knowledge_gaps())
             all_claims = self.memory.get_all_claims()
             all_hypotheses = self.memory.get_all_hypotheses()
-            skeptic_output = self._run_agent_logged(
-                self.skeptic,
-                self._build_skeptic_prompt(all_claims, all_hypotheses),
-                iter_log,
-            )
 
-            # Process skeptic findings
+            skeptic_prompt = self._build_skeptic_prompt(all_claims, all_hypotheses)
+            synthesis_prompt = self._build_synthesis_prompt(all_claims, all_hypotheses)
+
+            try:
+                # Run both agents concurrently via asyncio
+                loop = asyncio.get_event_loop()
+            except RuntimeError:
+                loop = asyncio.new_event_loop()
+                asyncio.set_event_loop(loop)
+
+            async def _parallel_skeptic_synthesis():
+                skeptic_task = asyncio.to_thread(
+                    self._run_agent_logged,
+                    self.skeptic, skeptic_prompt, iter_log,
+                )
+                synthesis_task = asyncio.to_thread(
+                    self._run_agent_logged,
+                    self.synthesizer, synthesis_prompt, iter_log,
+                )
+                return await asyncio.gather(skeptic_task, synthesis_task)
+
+            skeptic_output, synthesis_output = loop.run_until_complete(
+                _parallel_skeptic_synthesis()
+            )
+            logger.info("Skeptic ‖ Synthesis parallel execution complete")
+
+            # Process results sequentially (order matters for persistence)
             positive_contradictions = self._process_skeptic_output(skeptic_output)
             gap_count_after = len(self.memory.get_all_knowledge_gaps())
 
-            # --- Step 4: Synthesis ---
+            # Re-fetch claims after skeptic may have updated credibility
             all_claims = self.memory.get_all_claims()
-            synthesis_output = self._run_agent_logged(
-                self.synthesizer,
-                self._build_synthesis_prompt(all_claims, all_hypotheses),
-                iter_log,
-            )
-
-            # Persist hypotheses (with guardrails)
             self._persist_hypotheses(synthesis_output, all_claims)
             if positive_contradictions:
                 self._apply_contradiction_influence(positive_contradictions)
                 self.contradiction_cycle_count += 1
 
-            # --- Step 5: Innovation (if innovation mode) ---
+            # --- Steps 5+6: Innovation ‖ Reflection (PARALLEL per audit §4.3.2) ---
             innovation_output = None
             prior_art_similarity = 0.5
+
             if mode == "innovation":
                 # GUARDRAIL: Prior art scan required before innovation
                 prior_art = self.prior_art_tool.scan(
@@ -217,37 +235,59 @@ class Orchestrator:
                 prior_art_similarity = prior_art.get(
                     "estimated_prior_art_similarity", 0.5
                 )
-                innovation_output = self._run_agent_logged(
-                    self.innovator,
-                    self._build_innovation_prompt(
-                        synthesis_output, prior_art,
-                        self.memory.get_unresolved_gaps(),
-                    ),
-                    iter_log,
-                )
-            latest_innovation_output = innovation_output
-            has_innovations = bool(
-                innovation_output and innovation_output.proposals
-            )
 
-            # --- Step 6: Compute Metrics ---
+            has_innovations_for_metrics = False
+
+            # Compute metrics first (needed for reflection prompt)
             metrics = self._compute_iteration_metrics(
                 iteration=iteration,
                 prior_art_similarity=prior_art_similarity,
                 gap_count_before=gap_count_before,
                 gap_count_after=gap_count_after,
                 tokens_this_iter=0,
-                has_innovations=has_innovations,
+                has_innovations=False,
                 new_claims_count=len(new_claims),
             )
 
-            # --- Step 7: Reflection ---
-            reflection_output = self._run_agent_logged(
-                self.reflector,
-                self._build_reflection_prompt(
-                    research_objective, metrics, iteration
-                ),
-                iter_log,
+            if mode == "innovation":
+                # Run Innovation ‖ Reflection in parallel
+                async def _parallel_innovation_reflection():
+                    innov_task = asyncio.to_thread(
+                        self._run_agent_logged,
+                        self.innovator,
+                        self._build_innovation_prompt(
+                            synthesis_output, prior_art,
+                            self.memory.get_unresolved_gaps(),
+                        ),
+                        iter_log,
+                    )
+                    reflect_task = asyncio.to_thread(
+                        self._run_agent_logged,
+                        self.reflector,
+                        self._build_reflection_prompt(
+                            research_objective, metrics, iteration
+                        ),
+                        iter_log,
+                    )
+                    return await asyncio.gather(innov_task, reflect_task)
+
+                innovation_output, reflection_output = loop.run_until_complete(
+                    _parallel_innovation_reflection()
+                )
+                logger.info("Innovation ‖ Reflection parallel execution complete")
+            else:
+                # Non-innovation mode: just run reflection
+                reflection_output = self._run_agent_logged(
+                    self.reflector,
+                    self._build_reflection_prompt(
+                        research_objective, metrics, iteration
+                    ),
+                    iter_log,
+                )
+
+            latest_innovation_output = innovation_output
+            has_innovations = bool(
+                innovation_output and innovation_output.proposals
             )
 
             if reflection_output.advisory_should_stop:

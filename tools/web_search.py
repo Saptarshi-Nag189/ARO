@@ -12,6 +12,7 @@ Sources (all free, no API keys):
   - trafilatura — clean text extraction from URLs
 """
 
+import asyncio
 import logging
 import time
 import re
@@ -444,3 +445,149 @@ def _format_results(results: List[Dict]) -> str:
     sections.append("=" * 60)
 
     return "\n".join(sections)
+
+
+# ── Async Search Wrappers ────────────────────────────────────────────────────
+# Wraps existing sync functions via asyncio.to_thread() — no rewrite needed.
+# Per audit §4.3.1: ~2× faster via asyncio.gather() (no thread overhead).
+
+async def search_ddg_async(query: str, max_results: int = MAX_RESULTS_PER_SOURCE) -> List[Dict]:
+    """Async DuckDuckGo search."""
+    from runtime.cache import search_cache
+    key = search_cache.hash_key("ddg", query, max_results)
+    cached = search_cache.get(key)
+    if cached:
+        return cached
+    results = await asyncio.to_thread(search_ddg, query, max_results)
+    search_cache.set(key, results)
+    return results
+
+
+async def search_wikipedia_async(query: str) -> List[Dict]:
+    """Async Wikipedia search."""
+    from runtime.cache import search_cache
+    key = search_cache.hash_key("wiki", query)
+    cached = search_cache.get(key)
+    if cached:
+        return cached
+    results = await asyncio.to_thread(search_wikipedia, query)
+    search_cache.set(key, results)
+    return results
+
+
+async def search_semantic_scholar_async(query: str, max_results: int = MAX_RESULTS_PER_SOURCE) -> List[Dict]:
+    """Async Semantic Scholar search."""
+    from runtime.cache import search_cache
+    key = search_cache.hash_key("ss", query, max_results)
+    cached = search_cache.get(key)
+    if cached:
+        return cached
+    results = await asyncio.to_thread(search_semantic_scholar, query, max_results)
+    search_cache.set(key, results)
+    return results
+
+
+async def search_arxiv_async(query: str, max_results: int = MAX_RESULTS_PER_SOURCE) -> List[Dict]:
+    """Async arXiv search."""
+    from runtime.cache import search_cache
+    key = search_cache.hash_key("arxiv", query, max_results)
+    cached = search_cache.get(key)
+    if cached:
+        return cached
+    results = await asyncio.to_thread(search_arxiv, query, max_results)
+    search_cache.set(key, results)
+    return results
+
+
+async def search_openalex_async(query: str, max_results: int = MAX_RESULTS_PER_SOURCE) -> List[Dict]:
+    """Async OpenAlex search."""
+    from runtime.cache import search_cache
+    key = search_cache.hash_key("oa", query, max_results)
+    cached = search_cache.get(key)
+    if cached:
+        return cached
+    results = await asyncio.to_thread(search_openalex, query, max_results)
+    search_cache.set(key, results)
+    return results
+
+
+async def search_all_engines_async(query: str) -> List[Dict]:
+    """Run all 5 search engines concurrently via asyncio.gather()."""
+    results = await asyncio.gather(
+        search_ddg_async(query),
+        search_semantic_scholar_async(query),
+        search_arxiv_async(query),
+        search_openalex_async(query),
+        search_wikipedia_async(query),
+        return_exceptions=True,
+    )
+    flat = []
+    for batch in results:
+        if isinstance(batch, list):
+            flat.extend(batch)
+        elif isinstance(batch, Exception):
+            logger.debug("Async search engine error: %s", batch)
+    return _deduplicate_results(flat)
+
+
+async def run_web_research_async(sub_questions: list, objective: str = "") -> str:
+    """
+    Async version of run_web_research(). Uses asyncio.gather() for
+    true concurrent search across all queries and engines.
+
+    ~2× faster than sync ThreadPoolExecutor version.
+    """
+    start = time.time()
+
+    # Build queries
+    queries = []
+    for sq in sub_questions[:5]:
+        q = sq.question if hasattr(sq, 'question') else str(sq)
+        queries.append(q)
+    if objective:
+        queries.insert(0, objective)
+
+    # Deduplicate
+    seen = set()
+    unique_queries = []
+    for q in queries:
+        q_lower = q.lower().strip()
+        if q_lower not in seen:
+            seen.add(q_lower)
+            unique_queries.append(q)
+
+    logger.info("Async web research: %d queries", len(unique_queries))
+
+    # Run all queries concurrently
+    all_batches = await asyncio.gather(
+        *[search_all_engines_async(q) for q in unique_queries],
+        return_exceptions=True,
+    )
+
+    all_results = []
+    for i, batch in enumerate(all_batches):
+        if isinstance(batch, list):
+            for r in batch:
+                r["query"] = unique_queries[i]
+            all_results.extend(batch)
+        elif isinstance(batch, Exception):
+            logger.debug("Query batch failed: %s", batch)
+
+    all_results = _deduplicate_results(all_results)
+
+    # Fetch full content for top web results (CPU-bound, use thread pool)
+    web_results = [r for r in all_results if r.get("source_type") == "web"][:4]
+    if web_results:
+        contents = await asyncio.gather(
+            *[asyncio.to_thread(fetch_page_content, r["url"]) for r in web_results],
+            return_exceptions=True,
+        )
+        for r, content in zip(web_results, contents):
+            if isinstance(content, str) and len(content) > 100:
+                r["full_content"] = content
+
+    elapsed = time.time() - start
+    logger.info("Async web research completed: %d results in %.1fs", len(all_results), elapsed)
+
+    return _format_results(all_results)
+

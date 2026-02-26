@@ -25,6 +25,7 @@ from memory.memory_service import MemoryService
 from runtime.model_gateway import ModelGateway
 from runtime.logger import SessionLogger
 from agents.orchestrator import Orchestrator
+from runtime.event_bus import EventBus
 
 
 def setup_logging(verbose: bool = False) -> None:
@@ -45,9 +46,9 @@ def setup_logging(verbose: bool = False) -> None:
 )
 @click.option(
     "--mode", "-m",
-    type=click.Choice(["interactive", "autonomous", "innovation"]),
+    type=click.Choice(["interactive", "autonomous", "innovation", "fast"]),
     default="autonomous",
-    help="Operation mode: interactive, autonomous, or innovation.",
+    help="Operation mode: interactive, autonomous, innovation, or fast (single-pass).",
 )
 @click.option(
     "--max-iterations", "-n",
@@ -157,11 +158,20 @@ def main(
         session_id=sid,
         mode=config.mode,
     )
-    orchestrator = Orchestrator(config, memory, gateway, session_logger)
+    event_bus = EventBus()
 
     try:
-        # Execute the research loop
-        report = orchestrator.run(
+        if mode == "fast":
+            # Fast mode: single-pass async pipeline (15-30s target)
+            import asyncio
+            from agents.fast_orchestrator import FastOrchestrator
+
+            fast_orch = FastOrchestrator(config, memory, gateway, event_bus)
+            report = asyncio.run(fast_orch.run(objective))
+        else:
+            # Standard multi-iteration mode
+            orchestrator = Orchestrator(config, memory, gateway, session_logger)
+            report = orchestrator.run(
             research_objective=objective,
             mode=mode,
         )

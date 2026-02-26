@@ -94,3 +94,30 @@ class FinalReport(BaseModel):
     total_execution_time_seconds: float = Field(default=0.0)
     termination_reason: str = Field(default="unknown")
     created_at: datetime = Field(default_factory=datetime.utcnow)
+
+
+class FastReport(BaseModel):
+    """Lightweight report for fast/single-pass mode. No iteration metrics."""
+
+    research_objective: str = Field(..., description="The original research objective")
+    executive_summary: str = Field(
+        ..., description="Comprehensive summary of findings"
+    )
+    key_findings: List[str] = Field(
+        default_factory=list,
+        description="Top findings as detailed bullet points"
+    )
+    conclusion: str = Field(
+        default="", description="Direct answer to the research objective"
+    )
+    confidence_score: float = Field(
+        default=0.0, ge=0.0, le=1.0,
+        description="Overall confidence in the conclusion"
+    )
+    sources_consulted: int = Field(default=0)
+    knowledge_gaps: List[str] = Field(
+        default_factory=list,
+        description="Identified gaps requiring further research"
+    )
+    execution_time_seconds: float = Field(default=0.0)
+

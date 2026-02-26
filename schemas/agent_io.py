@@ -149,12 +149,12 @@ class SynthesisOutput(BaseModel):
     """Output from the Synthesis Agent."""
     hypotheses: List[Hypothesis] = Field(
         ...,
-        max_length=8,
+        max_items=8,
         description="Synthesized hypotheses (max 8)"
     )
     merged_claims: Optional[List[str]] = Field(
         default_factory=list,
-        max_length=100,
+        max_items=100,
         description="Claim IDs that were merged during synthesis (max 100)"
     )
     narrative_summary: str = Field(
@@ -164,7 +164,7 @@ class SynthesisOutput(BaseModel):
     )
     relationships: Optional[List[HypothesisRelationship]] = Field(
         default_factory=list,
-        max_length=12,
+        max_items=12,
         description="Discovered relationships between hypotheses (max 12)"
     )
 
