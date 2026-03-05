@@ -22,6 +22,8 @@ env/
 *.db
 *.db-shm
 *.db-wal
+*.db.shm
+*.db.wal
 *.sqlite3
 
 # Vector Store (ChromaDB persistence)
