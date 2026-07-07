@@ -295,6 +295,7 @@ curl http://localhost:5000/api/health
 - [Mathematical Models](docs/mathematical_models.md)
 - [Agent Contracts](docs/agent_contracts.md)
 - [Reasoning Mode](docs/reasoning_mode.md)
+- [Project Review & Improvement Plan](docs/project_review.md)
 - [Security Policy](SECURITY.md)
 
 ---
