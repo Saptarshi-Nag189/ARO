@@ -249,8 +249,9 @@ docker run -p 5000:5000 --env-file .env aro
 ```
 
 The Docker image uses:
-- **Python 3.12 slim** + multi-stage build (~250MB)
-- **Gunicorn** with 4 gthread workers (300s timeout for long research sessions)
+- **Python 3.12 slim** + multi-stage build
+- **Gunicorn** with a single gthread worker × 16 threads (session progress state is in-process; 300s timeout for long research sessions)
+- Runs as a **non-root user**
 - Built-in **health check** at `/api/health`
 - Persistent **vector store** volume for cross-session memory
 

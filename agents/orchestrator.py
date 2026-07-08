@@ -236,8 +236,6 @@ class Orchestrator:
                     "estimated_prior_art_similarity", 0.5
                 )
 
-            has_innovations_for_metrics = False
-
             # Compute metrics first (needed for reflection prompt)
             metrics = self._compute_iteration_metrics(
                 iteration=iteration,
@@ -289,6 +287,14 @@ class Orchestrator:
             has_innovations = bool(
                 innovation_output and innovation_output.proposals
             )
+
+            # Recompute novelty now that we know whether innovations were
+            # generated — the earlier computation assumed has_innovations=False
+            # and would otherwise cap novelty at 0.5 permanently.
+            if has_innovations:
+                metrics.novelty_score = self._compute_novelty(
+                    prior_art_similarity, has_innovations=True
+                )
 
             if reflection_output.advisory_should_stop:
                 logger.info(
@@ -598,16 +604,14 @@ class Orchestrator:
         source_ids = [s.id for s in sources]
 
         for claim in claims_output.claims:
-            # Map source_id to an actual registered source
+            # GUARDRAIL: never reattribute a claim to a source it did not
+            # come from — drop claims with unknown source IDs instead.
             if claim.source_id not in source_ids:
-                # Use the first available source as fallback
-                if source_ids:
-                    claim.source_id = source_ids[0]
-                else:
-                    logger.warning(
-                        "Skipping claim without valid source: %s", claim.subject
-                    )
-                    continue
+                logger.warning(
+                    "Skipping claim with unknown source_id '%s': %s",
+                    claim.source_id, claim.subject,
+                )
+                continue
             try:
                 persisted_claim = self.memory.add_claim(claim)
                 persisted.append(persisted_claim)
@@ -701,15 +705,13 @@ class Orchestrator:
             ]
 
             if not valid_supporting:
-                # Try to assign at least one claim
-                if all_claims:
-                    valid_supporting = [all_claims[0].id]
-                else:
-                    logger.warning(
-                        "Skipping hypothesis without supporting claims: %s",
-                        hyp.statement[:80],
-                    )
-                    continue
+                # GUARDRAIL: never fabricate support by attaching an
+                # unrelated claim — drop the hypothesis instead.
+                logger.warning(
+                    "Skipping hypothesis without valid supporting claims: %s",
+                    hyp.statement[:80],
+                )
+                continue
 
             hyp.supporting_claim_ids = valid_supporting
             hyp.opposing_claim_ids = valid_opposing
@@ -817,6 +819,38 @@ class Orchestrator:
             avg_effective_confidence = sum(effective_confidences) / len(effective_confidences)
 
         # Novelty score
+        novelty = self._compute_novelty(prior_art_similarity, has_innovations)
+
+        return IterationMetrics(
+            iteration=iteration,
+            hypothesis_confidence=round(avg_effective_confidence, 6),
+            raw_confidence=round(avg_raw_confidence, 6),
+            epistemic_risk=epistemic_risk,
+            risk_floor_applied=risk_floor_applied,
+            novelty_score=novelty,
+            new_claims_count=new_claims_count,
+            total_claims_count=len(all_claims),
+            total_sources_count=self.memory.source_registry.count_sources(),
+            unresolved_gaps_count=len(unresolved_gaps),
+            gap_count_before=gap_count_before,
+            gap_count_after=gap_count_after,
+            contradiction_cycle_count=self.contradiction_cycle_count,
+            token_usage=tokens_this_iter,
+        )
+
+    def _compute_novelty(
+        self,
+        prior_art_similarity: float,
+        has_innovations: bool,
+    ) -> float:
+        """
+        Compute the novelty score from the current memory state.
+
+        Separated from _compute_iteration_metrics so it can be recomputed
+        after the Innovation agent runs — metrics are first computed before
+        innovation (the reflection prompt needs them), at which point
+        has_innovations is not yet known.
+        """
         graph_bridge = self.memory.get_graph_bridge_score()
         contradiction_resolution = compute_contradiction_resolution_score(
             self.total_contradictions, self.resolved_contradictions
@@ -836,22 +870,7 @@ class Orchestrator:
         if not has_innovations:
             novelty = min(novelty, 0.5)
 
-        return IterationMetrics(
-            iteration=iteration,
-            hypothesis_confidence=round(avg_effective_confidence, 6),
-            raw_confidence=round(avg_raw_confidence, 6),
-            epistemic_risk=epistemic_risk,
-            risk_floor_applied=risk_floor_applied,
-            novelty_score=novelty,
-            new_claims_count=new_claims_count,
-            total_claims_count=len(all_claims),
-            total_sources_count=self.memory.source_registry.count_sources(),
-            unresolved_gaps_count=len(unresolved_gaps),
-            gap_count_before=gap_count_before,
-            gap_count_after=gap_count_after,
-            contradiction_cycle_count=self.contradiction_cycle_count,
-            token_usage=tokens_this_iter,
-        )
+        return novelty
 
     # ─── Report Generation ────────────────────────────────────────────────
 
@@ -1035,34 +1054,14 @@ class Orchestrator:
                 f"Write ONLY the conclusion text, no JSON, no headers, no formatting."
             )
 
-            from schemas.agent_io import ReflectionOutput
-            # Use a simple raw LLM call for conclusion (not schema-validated)
-            from config import ModelConfig
-            model_config = self.config.get_model_config("synthesis")
-
-            messages = [{"role": "user", "content": prompt}]
-
-            # Direct API call for plain text
-            headers = {
-                "Authorization": f"Bearer {self.config.openrouter_api_key}",
-                "Content-Type": "application/json",
-            }
-            payload = {
-                "model": model_config.model_id,
-                "messages": messages,
-                "temperature": 0.4,
-                "max_tokens": 800,
-            }
-            import requests as req
-            response = req.post(
-                self.config.openrouter_base_url,
-                headers=headers,
-                data=json.dumps(payload),
-                timeout=120,
+            # Plain-text call through the gateway (per-model key routing,
+            # retries, and token accounting — no direct API calls).
+            conclusion = self.gateway.call_text(
+                agent_name="synthesis",
+                messages=[{"role": "user", "content": prompt}],
+                temperature=0.4,
+                max_tokens=800,
             )
-            response.raise_for_status()
-            result = response.json()
-            conclusion = result["choices"][0]["message"]["content"].strip()
 
             logger.info("Generated conclusion (%d chars)", len(conclusion))
             return conclusion
@@ -1072,15 +1071,14 @@ class Orchestrator:
             # Fallback: build a basic conclusion from hypotheses
             if hypotheses:
                 best = max(hypotheses, key=lambda h: getattr(h, 'confidence', 0))
+                risk_text = (
+                    f"{last_metrics.epistemic_risk:.1%}"
+                    if last_metrics else "unknown"
+                )
                 return (
                     f"Based on the analysis of {len(key_claims)} claims across "
                     f"multiple sources, the strongest finding is: {best.statement} "
                     f"(confidence: {best.confidence:.1%}). "
-                    f"This conclusion carries an epistemic risk of "
-                    f"{last_metrics.epistemic_risk:.1% if last_metrics else 'unknown'}."
+                    f"This conclusion carries an epistemic risk of {risk_text}."
                 )
-            return "Insufficient evidence to draw a definitive conclusion."
-
-        except Exception as exc:
-            logger.warning("Failed to generate conclusion: %s", exc)
             return "Insufficient evidence to draw a definitive conclusion."

@@ -1,0 +1,36 @@
+# Never bake secrets or local state into the image
+.env
+.env.*
+*.db
+*.db-shm
+*.db-wal
+*.sqlite3
+logs/
+vector_store/
+
+# VCS / CI
+.git/
+.github/
+.gitignore
+
+# Python local artifacts
+venv/
+.venv/
+__pycache__/
+**/__pycache__/
+*.py[cod]
+.pytest_cache/
+htmlcov/
+.coverage
+
+# Frontend build inputs are copied in their own stage
+ui/node_modules/
+ui/dist/
+ui/.vite/
+
+# Docs & editor cruft
+docs/
+*.md
+.vscode/
+.idea/
+.DS_Store

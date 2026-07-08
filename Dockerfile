@@ -30,14 +30,17 @@ RUN npm run build
 FROM base AS final
 WORKDIR /app
 
-# Copy application code
+# Copy application code (see .dockerignore — excludes .env, DBs, logs, .git)
 COPY . .
 
 # Copy built UI from stage 2
 COPY --from=ui-builder /ui/dist /app/ui/dist
 
-# Create necessary directories
-RUN mkdir -p /app/logs /app/vector_store
+# Create necessary directories and drop root privileges
+RUN useradd --create-home --shell /usr/sbin/nologin aro && \
+    mkdir -p /app/logs /app/vector_store && \
+    chown -R aro:aro /app
+USER aro
 
 # Expose port
 EXPOSE 5000
@@ -46,14 +49,18 @@ EXPOSE 5000
 HEALTHCHECK --interval=30s --timeout=10s --start-period=15s --retries=3 \
     CMD curl -f http://localhost:5000/api/health || exit 1
 
-# Production server: Gunicorn with gthread workers
-# - 4 workers for multi-core utilization
-# - 4 threads per worker for I/O concurrency
+# Production server: Gunicorn with a SINGLE gthread worker.
+# Session progress state (_progress_queues/_session_status) lives in process
+# memory, so multiple workers would 404 on /api/stream for sessions started
+# on a sibling worker. The workload is I/O-bound (LLM + web requests), so one
+# worker with many threads is the right shape until that state moves to a
+# shared store (e.g. Redis).
+# - 16 threads for I/O concurrency
 # - 300s timeout for long research sessions
 CMD ["gunicorn", \
-     "-w", "4", \
+     "-w", "1", \
      "-k", "gthread", \
-     "--threads", "4", \
+     "--threads", "16", \
      "--bind", "0.0.0.0:5000", \
      "--timeout", "300", \
      "--access-logfile", "-", \

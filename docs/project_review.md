@@ -5,6 +5,10 @@
 
 This document records a full audit of the ARO codebase: what the project is, confirmed bugs (with file/line references), design flaws, security observations, and a prioritized list of improvements and upgrades.
 
+> **Fix status:** the following findings have been fixed on this branch:
+> all of **P0** (2.1 max-iterations enforcement, 2.2 f-string crash, 2.3 single-worker gunicorn, 2.6 session eviction, 2.7 `.dockerignore` + non-root user, 2.8 log-handler leak) and the low-risk parts of **P1** (2.4 novelty recompute after innovation, 2.10 conclusion routed through the gateway via a new `ModelGateway.call_text()`, 2.12 no more fabricated claim/source linkage, 2.15 API `mode`/`runtime_mode` validation).
+> Still open: 2.5 (contradiction/gap resolution needs agent-contract changes), 2.9 (cross-session memory read path), 2.11 (real prior-art scan), 2.13 (UI auth support), 2.14 (source dedup / multi-source merge tracking), and everything in P2/P3 not listed above. Line numbers in this document refer to the commit the review was written against.
+
 ---
 
 ## 1. Project Understanding
