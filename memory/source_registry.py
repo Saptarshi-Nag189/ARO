@@ -21,7 +21,16 @@ class SourceRegistry:
         self.session_id = session_id
 
     def add_source(self, source: Source) -> Source:
-        """Register a new source."""
+        """
+        Register a new source, deduplicating by URL (or by title for
+        URL-less sources). Re-registering the same source every iteration
+        would inflate source counts and skew credibility variance, which
+        feeds the epistemic-risk score.
+        """
+        existing = self._find_duplicate(source)
+        if existing is not None:
+            return existing
+
         if not source.id:
             source.id = f"src_{uuid.uuid4().hex[:12]}"
 
@@ -47,6 +56,23 @@ class SourceRegistry:
         )
         self.conn.commit()
         return source
+
+    def _find_duplicate(self, source: Source) -> Optional[Source]:
+        """Find an already-registered source with the same URL (or title)."""
+        if source.url:
+            normalized = source.url.strip().rstrip("/")
+            row = self.conn.execute(
+                "SELECT * FROM sources WHERE session_id = ? "
+                "AND TRIM(url, '/') = ?",
+                (self.session_id, normalized),
+            ).fetchone()
+        else:
+            row = self.conn.execute(
+                "SELECT * FROM sources WHERE session_id = ? "
+                "AND url IS NULL AND title = ?",
+                (self.session_id, source.title),
+            ).fetchone()
+        return self._row_to_source(row) if row else None
 
     def get_source(self, source_id: str) -> Optional[Source]:
         """Get a source by ID."""

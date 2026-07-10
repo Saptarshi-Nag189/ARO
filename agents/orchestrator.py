@@ -101,6 +101,13 @@ class Orchestrator:
         self.contradiction_cycle_count = 0
         self.skeptic_detected_gap_count = 0
 
+        # Contradiction bookkeeping: pairs are frozensets of claim IDs so
+        # (a, b) and (b, a) are the same contradiction. `seen` prevents the
+        # skeptic from re-counting the same pair across iterations; `open`
+        # holds pairs not yet resolved by synthesis.
+        self.seen_contradiction_pairs: set = set()
+        self.open_contradiction_pairs: set = set()
+
     def run(
         self,
         research_objective: str,
@@ -125,9 +132,25 @@ class Orchestrator:
         self.memory.create_session(research_objective, mode)
         start_time = time.time()
 
+        # Cross-session memory recall (read path for the vector store):
+        # surface semantically relevant findings from past sessions so the
+        # planner and researcher don't start from zero.
+        prior_knowledge_block = self._build_prior_knowledge_block(research_objective)
+        if prior_knowledge_block:
+            logger.info(
+                "Injecting %d chars of prior-session knowledge into prompts",
+                len(prior_knowledge_block),
+            )
+
         # Phase 1: Initial planning
         pre_loop_tokens_before = self.gateway.total_tokens_used
-        plan = self._run_planner(research_objective)
+        plan = self._run_planner(
+            research_objective,
+            context=(
+                {"prior_knowledge_from_past_sessions": prior_knowledge_block}
+                if prior_knowledge_block else None
+            ),
+        )
         pre_loop_planner_tokens = self.gateway.total_tokens_used - pre_loop_tokens_before
 
         # Main research loop
@@ -159,6 +182,8 @@ class Orchestrator:
             research_prompt = self._build_research_prompt(
                 research_objective, plan, iteration, web_context=web_context
             )
+            if iteration == 1 and prior_knowledge_block:
+                research_prompt += f"\n\n{prior_knowledge_block}\n"
             research_output = self._run_agent_logged(
                 self.researcher, research_prompt, iter_log,
                 context={"plan": plan},
@@ -186,7 +211,12 @@ class Orchestrator:
             all_hypotheses = self.memory.get_all_hypotheses()
 
             skeptic_prompt = self._build_skeptic_prompt(all_claims, all_hypotheses)
-            synthesis_prompt = self._build_synthesis_prompt(all_claims, all_hypotheses)
+            synthesis_prompt = self._build_synthesis_prompt(
+                all_claims,
+                all_hypotheses,
+                open_contradictions=self.open_contradiction_pairs,
+                unresolved_gaps=self.memory.get_unresolved_gaps(),
+            )
 
             try:
                 # Run both agents concurrently via asyncio
@@ -218,6 +248,7 @@ class Orchestrator:
             # Re-fetch claims after skeptic may have updated credibility
             all_claims = self.memory.get_all_claims()
             self._persist_hypotheses(synthesis_output, all_claims)
+            self._process_synthesis_resolutions(synthesis_output)
             if positive_contradictions:
                 self._apply_contradiction_influence(positive_contradictions)
                 self.contradiction_cycle_count += 1
@@ -441,6 +472,40 @@ class Orchestrator:
             prompt += f"\n\nContext from previous iterations:\n{json.dumps(context, indent=2)}"
         return self.planner.run(prompt, context)
 
+    def _build_prior_knowledge_block(self, objective: str) -> str:
+        """
+        Retrieve semantically relevant claims/hypotheses from past sessions
+        (vector store) and format them for prompt injection. Returns "" when
+        cross-session memory is disabled, unavailable, or empty.
+        """
+        try:
+            prior_claims = self.memory.get_prior_knowledge(objective, top_k=5)
+            prior_hyps = self.memory.get_prior_hypotheses(objective, top_k=3)
+        except Exception as e:
+            logger.debug("Prior-knowledge retrieval failed: %s", e)
+            return ""
+
+        if not prior_claims and not prior_hyps:
+            return ""
+
+        lines = [
+            "PRIOR KNOWLEDGE FROM PAST RESEARCH SESSIONS:",
+            "(semantic matches from earlier sessions of this ARO instance —"
+            " treat as leads to verify, not as evidence; re-source anything"
+            " you rely on)",
+        ]
+        for c in prior_claims:
+            lines.append(
+                f"- [past claim, confidence {c.get('confidence', 0.0):.2f}] "
+                f"{c.get('text', '')}"
+            )
+        for h in prior_hyps:
+            lines.append(
+                f"- [past hypothesis, confidence {h.get('confidence', 0.0):.2f}] "
+                f"{h.get('text', '')}"
+            )
+        return "\n".join(lines)
+
     # ─── Prompt Builders ──────────────────────────────────────────────────
 
     def _build_research_prompt(self, objective, plan, iteration, web_context=""):
@@ -510,7 +575,13 @@ class Orchestrator:
             f"Identify contradictions, credibility issues, and knowledge gaps."
         )
 
-    def _build_synthesis_prompt(self, claims, existing_hypotheses):
+    def _build_synthesis_prompt(
+        self, claims, existing_hypotheses,
+        open_contradictions=None, unresolved_gaps=None,
+    ):
+        # Note: synthesis runs in parallel with the skeptic on the same
+        # snapshot, so contradictions/gaps shown here are from PREVIOUS
+        # iterations — resolution naturally lags detection by one iteration.
         max_claims = 60
         max_existing_hypotheses = 30
         selected_claims = sorted(
@@ -533,6 +604,15 @@ class Orchestrator:
             for h in selected_hypotheses
         ) if selected_hypotheses else "  (No existing hypotheses)"
 
+        contradictions_text = "\n".join(
+            f"  - {a} vs {b}"
+            for a, b in sorted(tuple(sorted(p)) for p in (open_contradictions or set()))
+        ) or "  (No open contradictions)"
+        gaps_text = "\n".join(
+            f"  [{g.id}] {g.description} (severity: {g.severity})"
+            for g in (unresolved_gaps or [])[:20]
+        ) or "  (No unresolved knowledge gaps)"
+
         return (
             f"Synthesize the following claims into coherent hypotheses.\n\n"
             f"Context limits:\n"
@@ -541,7 +621,17 @@ class Orchestrator:
             f"of {len(existing_hypotheses)}\n\n"
             f"Current claims:\n{claims_text}\n\n"
             f"Existing hypotheses:\n{existing}\n\n"
+            f"Open contradictions (claim ID pairs flagged by the skeptic):\n"
+            f"{contradictions_text}\n\n"
+            f"Unresolved knowledge gaps:\n{gaps_text}\n\n"
             "Form new hypotheses or update existing ones. Reference claim IDs.\n\n"
+            "Resolution duties:\n"
+            "- If the evidence now settles an open contradiction listed above,\n"
+            "  add it to resolved_contradictions with claim_id_a, claim_id_b,\n"
+            "  and a one-sentence resolution. ONLY use pairs from the list.\n"
+            "- If the evidence now adequately addresses an unresolved gap\n"
+            "  listed above, add its ID to resolved_gap_ids. ONLY use IDs\n"
+            "  from the list. Do NOT mark anything resolved speculatively.\n\n"
             "Strict output constraints:\n"
             "- Return at most 8 hypotheses.\n"
             "- Return at most 20 merged_claims.\n"
@@ -627,12 +717,20 @@ class Orchestrator:
         Returns:
             List of contradiction tuples (claim_id_a, claim_id_b) where severity > 0.
         """
-        positive_contradictions = [
-            (c.claim_id_a, c.claim_id_b)
-            for c in skeptic_output.contradictions
-            if c.severity > 0
-        ]
-        self.total_contradictions += len(positive_contradictions)
+        positive_contradictions = []
+        for c in skeptic_output.contradictions:
+            if c.severity <= 0:
+                continue
+            pair = frozenset((c.claim_id_a, c.claim_id_b))
+            if len(pair) < 2:
+                continue  # self-contradiction reports are noise
+            positive_contradictions.append((c.claim_id_a, c.claim_id_b))
+            # Only count a pair once, even if the skeptic re-reports it
+            # in later iterations.
+            if pair not in self.seen_contradiction_pairs:
+                self.seen_contradiction_pairs.add(pair)
+                self.open_contradiction_pairs.add(pair)
+                self.total_contradictions += 1
 
         # Apply credibility challenges
         for challenge in skeptic_output.credibility_challenges:
@@ -662,6 +760,27 @@ class Orchestrator:
                 raise
 
         return positive_contradictions
+
+    def _process_synthesis_resolutions(self, synthesis_output) -> None:
+        """
+        Apply contradiction and knowledge-gap resolutions reported by the
+        Synthesis agent. Only pairs/IDs that are actually open are accepted,
+        so the model cannot inflate scores by "resolving" things it was
+        never shown.
+        """
+        for res in (synthesis_output.resolved_contradictions or []):
+            pair = frozenset((res.claim_id_a, res.claim_id_b))
+            if pair in self.open_contradiction_pairs:
+                self.open_contradiction_pairs.discard(pair)
+                self.resolved_contradictions += 1
+                logger.info(
+                    "Contradiction resolved (%s vs %s): %s",
+                    res.claim_id_a, res.claim_id_b, res.resolution[:120],
+                )
+
+        for gap_id in (synthesis_output.resolved_gap_ids or []):
+            if self.memory.resolve_knowledge_gap(gap_id):
+                logger.info("Knowledge gap resolved: %s", gap_id)
 
     def _apply_contradiction_influence(
         self,
@@ -799,10 +918,14 @@ class Orchestrator:
                 )
 
                 # Single-source guardrail: multiple supporting claims from one
-                # source are still single-source evidence.
-                unique_support_sources = {
-                    claim.source_id for claim in supporting
-                }
+                # source are still single-source evidence. Corroborating
+                # sources recorded during claim merges count as independent.
+                unique_support_sources = set()
+                for claim in supporting:
+                    unique_support_sources.add(claim.source_id)
+                    unique_support_sources.update(
+                        claim.corroborating_source_ids or []
+                    )
                 if len(unique_support_sources) < 2:
                     eff_conf = min(eff_conf, 0.85)
 

@@ -271,7 +271,7 @@ curl http://localhost:5000/api/health
 | `OPENROUTER_API_KEY` | ✅ | Default API key (Trinity Large Preview) |
 | `OPENROUTER_API_KEY_STEP` | Optional | API key for Step 3.5 Flash (falls back to default) |
 | `OPENROUTER_API_KEY_GPT_OSS` | Optional | API key for GPT-OSS-120B (falls back to default) |
-| `ARO_API_KEY` | Optional | Protect `/api/` endpoints (leave empty to disable auth) |
+| `ARO_API_KEY` | Optional | Protect `/api/` endpoints (leave empty to disable auth). To use the dashboard with auth enabled, store the same key in the browser once: `localStorage.setItem('aro_api_key', '<key>')` — fetches send it as `X-API-Key`; the SSE stream passes it as an `api_key` query parameter |
 | `ARO_HOST` | Optional | Server bind address (default: `127.0.0.1`) |
 | `ARO_PORT` | Optional | Server port (default: `5000`) |
 | `ARO_MAX_CONCURRENT` | Optional | Max concurrent research sessions (default: `3`) |

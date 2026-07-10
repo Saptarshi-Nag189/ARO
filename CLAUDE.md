@@ -24,7 +24,9 @@ Full audit with file/line references: **`docs/project_review.md`** — read it b
 - `requirements.txt` pins `google-adk` and `sqlalchemy` which are **never imported**; `pytest==7.0` with **zero tests in the repo**; GitHub Dependabot reports ~13 vulnerabilities (2 critical) on main.
 - Skeptic `CredibilityChallenge.target_id` is only looked up as a *source*, but the skeptic prompt only shows *claim* IDs, so most challenges are silently dropped (finding 3.4).
 
-## Fixes already applied (branch `claude/project-review-docs-pzlbnk`, commits `53d140f` + `b752d97`)
+## Fixes already applied (branch `claude/project-review-docs-pzlbnk`)
+
+Commits `53d140f` + `b752d97` (P0 + safe P1):
 
 - `max_iterations` enforced as first check in `TerminationChecker.should_terminate()` (loop previously unbounded; budget check is still effectively dead — cost never recorded).
 - Fixed `ValueError` f-string crash + duplicate `except` in `Orchestrator._generate_conclusion` fallback.
@@ -35,20 +37,28 @@ Full audit with file/line references: **`docs/project_review.md`** — read it b
 - `SessionLogger.close()` added and called from `app.py`/`main.py` (was leaking a FileHandler per session on the shared `"aro"` logger, duplicating logs across session files).
 - Added `.dockerignore` (previously `.env`, `*.db`, `logs/`, `.git` were baked into images via `COPY . .`); Dockerfile now runs as non-root user `aro`, gunicorn `-w 1 --threads 16`.
 
-## Top remaining work (prioritized in docs/project_review.md §6)
+Later commits (rest of P1 + P2/P3 highlights):
 
-1. Wire contradiction resolution + knowledge-gap resolution end-to-end (needs `SynthesisOutput`/prompt changes) — finding 2.5.
-2. Read path for cross-session memory (inject `get_prior_knowledge(objective)` into planner/research prompts) — 2.9.
-3. Real prior-art scan using the existing scholarly search engines — 2.11.
-4. Source dedup by URL + preserve multi-source evidence through claim merges (single-source cap currently misfires) — 2.14.
-5. UI support for `ARO_API_KEY` (fetch header + token param for EventSource; enabling auth currently breaks the dashboard) — 2.13.
-6. Test suite + CI: none exists. Highest-value first targets: `TerminationChecker`, `evaluation/*` pure functions, `ClaimStore` dedup, `MemoryService` guardrails, `ModelGateway._parse_and_validate`, Flask API via `test_client()`.
-7. Dependency cleanup: drop `google-adk`/`sqlalchemy`, migrate `duckduckgo-search`→`ddgs`, refresh pins (Dependabot criticals).
+- **Contradiction/gap resolution wired end-to-end (2.5)**: `SynthesisOutput.resolved_contradictions` + `resolved_gap_ids`; orchestrator tracks `seen_contradiction_pairs`/`open_contradiction_pairs` (frozensets — dedupes skeptic re-reports), only accepts resolutions for pairs/IDs it actually showed the model; synthesis prompt lists open contradictions + unresolved gaps.
+- **Cross-session memory read path (2.9)**: `Orchestrator._build_prior_knowledge_block()` injects vector-store matches into the planner context and iteration-1 research prompt.
+- **Real prior-art scan (2.11)**: `PriorArtTool.scan` queries Semantic Scholar + OpenAlex, scores lexical overlap (top-3 mean, clamped to [0.15, 0.90]); falls back to neutral 0.5 offline.
+- **Source dedup + corroboration (2.14)**: `SourceRegistry.add_source` dedupes by URL (title for URL-less); claims gained `corroborating_source_ids` (additive `_ensure_column` migration in `db.py`); merges record cross-source corroboration; single-source confidence cap counts corroborating sources.
+- **UI auth (2.13)**: `ui/src/api.js` (`apiFetch`/`streamUrl`); key stored via `localStorage.setItem('aro_api_key', …)`; server accepts `api_key` query param (EventSource can't send headers).
+- **Tests + CI**: `tests/` (65 tests, no network/chromadb needed) + `.github/workflows/ci.yml`. Run with `python -m pytest -q`.
+- **Deps**: dropped `google-adk`/`sqlalchemy` (never imported), `duckduckgo-search`→`ddgs`, `pytest>=8`.
+- **SSRF (2.20)**: `_is_safe_url` now resolves hostnames and requires every address to be public.
+
+## Top remaining work (see docs/project_review.md fix-status note)
+
+1. Interactive mode: implement pause/continue or remove from docs/CLI (currently a no-op).
+2. Adopt-or-delete dead modules: `agents/prompt_builder.py`, `agents/data_processor.py`, `evaluation/metrics_engine.py`, `runtime/event_bus.py` (replace app.py monkey-patching), `ModelGateway.call_async_stream`, async search wrappers, unused caches, `tools/search_tool.py`.
+3. Skeptic credibility challenges: `target_id` only looked up as a source but prompt shows claim IDs — most challenges silently dropped (finding 3.4).
+4. `datetime.utcnow()` sweep (mind naive-vs-aware mixing with stored ISO strings), SQLite on a Docker volume, rate limiting, refresh remaining Dependabot pins.
 
 ## Conventions & verification
 
-- Python 3.10+; no formatter/linter configured; `datetime.utcnow()` still used widely (deprecated — new code should use `datetime.now(timezone.utc)`).
+- Python 3.10+; no formatter/linter configured.
 - All LLM calls must go through `ModelGateway` (use `call`, `call_async`, or `call_text`) — never raw HTTP.
 - All DB mutations go through `MemoryService` — agents never touch SQLite directly.
-- No test suite yet: verify changes with targeted inline scripts (install `pydantic requests networkx python-dotenv click flask flask-cors`; note the container's system `blinker` may need `pip install --ignore-installed blinker`). `python -m py_compile` for syntax.
-- Development branch for the review/fix work: `claude/project-review-docs-pzlbnk` (pushed; no PR opened yet — do not create one unless asked).
+- Verify with `python -m pytest -q` (works with just `pydantic requests networkx python-dotenv click flask flask-cors pytest`; chromadb optional — the container's system `blinker` may need `pip install --ignore-installed blinker`).
+- Development branch: `claude/project-review-docs-pzlbnk`. Review artifact (phone-friendly): https://claude.ai/code/artifact/9e00955a-e836-479d-b64b-040ca8d2c187

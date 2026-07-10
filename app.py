@@ -61,7 +61,9 @@ def require_api_key():
         return
     if not _ARO_API_KEY:
         return  # key not configured, skip enforcement (dev mode)
-    provided = request.headers.get("X-API-Key", "")
+    # EventSource cannot send custom headers, so the SSE client passes the
+    # key as a query parameter instead.
+    provided = request.headers.get("X-API-Key", "") or request.args.get("api_key", "")
     if not hmac.compare_digest(provided, _ARO_API_KEY):
         return jsonify({"error": "unauthorized"}), 401
 

@@ -145,16 +145,25 @@ class HypothesisRelationship(BaseModel):
     )
 
 
+class ContradictionResolution(BaseModel):
+    """A contradiction the Synthesis agent considers resolved by the evidence."""
+    claim_id_a: str = Field(..., description="First claim ID of the resolved pair")
+    claim_id_b: str = Field(..., description="Second claim ID of the resolved pair")
+    resolution: str = Field(
+        ..., description="How the contradiction was resolved (which claim prevails and why)"
+    )
+
+
 class SynthesisOutput(BaseModel):
     """Output from the Synthesis Agent."""
     hypotheses: List[Hypothesis] = Field(
         ...,
-        max_items=8,
+        max_length=8,
         description="Synthesized hypotheses (max 8)"
     )
     merged_claims: Optional[List[str]] = Field(
         default_factory=list,
-        max_items=100,
+        max_length=100,
         description="Claim IDs that were merged during synthesis (max 100)"
     )
     narrative_summary: str = Field(
@@ -164,8 +173,24 @@ class SynthesisOutput(BaseModel):
     )
     relationships: Optional[List[HypothesisRelationship]] = Field(
         default_factory=list,
-        max_items=12,
+        max_length=12,
         description="Discovered relationships between hypotheses (max 12)"
+    )
+    resolved_contradictions: Optional[List[ContradictionResolution]] = Field(
+        default_factory=list,
+        max_length=12,
+        description=(
+            "Open contradictions (from the list provided in the prompt) that the "
+            "current evidence now resolves. Only include pairs you were shown."
+        )
+    )
+    resolved_gap_ids: Optional[List[str]] = Field(
+        default_factory=list,
+        max_length=20,
+        description=(
+            "IDs of unresolved knowledge gaps (from the list provided in the "
+            "prompt) that the current evidence now adequately addresses."
+        )
     )
 
 

@@ -38,6 +38,13 @@ class Claim(BaseModel):
         default_factory=list,
         description="IDs of claims this was merged from (deduplication)"
     )
+    corroborating_source_ids: Optional[List[str]] = Field(
+        default_factory=list,
+        description=(
+            "Additional source IDs that corroborated this claim via "
+            "deduplication merges (beyond the primary source_id)"
+        )
+    )
     evidence_count: int = Field(
         default=1,
         description="Number of independent evidence sources supporting this claim"
