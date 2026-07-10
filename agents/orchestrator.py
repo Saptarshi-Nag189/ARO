@@ -101,6 +101,13 @@ class Orchestrator:
         self.contradiction_cycle_count = 0
         self.skeptic_detected_gap_count = 0
 
+        # Contradiction bookkeeping: pairs are frozensets of claim IDs so
+        # (a, b) and (b, a) are the same contradiction. `seen` prevents the
+        # skeptic from re-counting the same pair across iterations; `open`
+        # holds pairs not yet resolved by synthesis.
+        self.seen_contradiction_pairs: set = set()
+        self.open_contradiction_pairs: set = set()
+
     def run(
         self,
         research_objective: str,
@@ -125,9 +132,25 @@ class Orchestrator:
         self.memory.create_session(research_objective, mode)
         start_time = time.time()
 
+        # Cross-session memory recall (read path for the vector store):
+        # surface semantically relevant findings from past sessions so the
+        # planner and researcher don't start from zero.
+        prior_knowledge_block = self._build_prior_knowledge_block(research_objective)
+        if prior_knowledge_block:
+            logger.info(
+                "Injecting %d chars of prior-session knowledge into prompts",
+                len(prior_knowledge_block),
+            )
+
         # Phase 1: Initial planning
         pre_loop_tokens_before = self.gateway.total_tokens_used
-        plan = self._run_planner(research_objective)
+        plan = self._run_planner(
+            research_objective,
+            context=(
+                {"prior_knowledge_from_past_sessions": prior_knowledge_block}
+                if prior_knowledge_block else None
+            ),
+        )
         pre_loop_planner_tokens = self.gateway.total_tokens_used - pre_loop_tokens_before
 
         # Main research loop
@@ -159,6 +182,8 @@ class Orchestrator:
             research_prompt = self._build_research_prompt(
                 research_objective, plan, iteration, web_context=web_context
             )
+            if iteration == 1 and prior_knowledge_block:
+                research_prompt += f"\n\n{prior_knowledge_block}\n"
             research_output = self._run_agent_logged(
                 self.researcher, research_prompt, iter_log,
                 context={"plan": plan},
@@ -186,7 +211,12 @@ class Orchestrator:
             all_hypotheses = self.memory.get_all_hypotheses()
 
             skeptic_prompt = self._build_skeptic_prompt(all_claims, all_hypotheses)
-            synthesis_prompt = self._build_synthesis_prompt(all_claims, all_hypotheses)
+            synthesis_prompt = self._build_synthesis_prompt(
+                all_claims,
+                all_hypotheses,
+                open_contradictions=self.open_contradiction_pairs,
+                unresolved_gaps=self.memory.get_unresolved_gaps(),
+            )
 
             try:
                 # Run both agents concurrently via asyncio
@@ -218,6 +248,7 @@ class Orchestrator:
             # Re-fetch claims after skeptic may have updated credibility
             all_claims = self.memory.get_all_claims()
             self._persist_hypotheses(synthesis_output, all_claims)
+            self._process_synthesis_resolutions(synthesis_output)
             if positive_contradictions:
                 self._apply_contradiction_influence(positive_contradictions)
                 self.contradiction_cycle_count += 1
@@ -235,8 +266,6 @@ class Orchestrator:
                 prior_art_similarity = prior_art.get(
                     "estimated_prior_art_similarity", 0.5
                 )
-
-            has_innovations_for_metrics = False
 
             # Compute metrics first (needed for reflection prompt)
             metrics = self._compute_iteration_metrics(
@@ -289,6 +318,14 @@ class Orchestrator:
             has_innovations = bool(
                 innovation_output and innovation_output.proposals
             )
+
+            # Recompute novelty now that we know whether innovations were
+            # generated — the earlier computation assumed has_innovations=False
+            # and would otherwise cap novelty at 0.5 permanently.
+            if has_innovations:
+                metrics.novelty_score = self._compute_novelty(
+                    prior_art_similarity, has_innovations=True
+                )
 
             if reflection_output.advisory_should_stop:
                 logger.info(
@@ -435,6 +472,40 @@ class Orchestrator:
             prompt += f"\n\nContext from previous iterations:\n{json.dumps(context, indent=2)}"
         return self.planner.run(prompt, context)
 
+    def _build_prior_knowledge_block(self, objective: str) -> str:
+        """
+        Retrieve semantically relevant claims/hypotheses from past sessions
+        (vector store) and format them for prompt injection. Returns "" when
+        cross-session memory is disabled, unavailable, or empty.
+        """
+        try:
+            prior_claims = self.memory.get_prior_knowledge(objective, top_k=5)
+            prior_hyps = self.memory.get_prior_hypotheses(objective, top_k=3)
+        except Exception as e:
+            logger.debug("Prior-knowledge retrieval failed: %s", e)
+            return ""
+
+        if not prior_claims and not prior_hyps:
+            return ""
+
+        lines = [
+            "PRIOR KNOWLEDGE FROM PAST RESEARCH SESSIONS:",
+            "(semantic matches from earlier sessions of this ARO instance —"
+            " treat as leads to verify, not as evidence; re-source anything"
+            " you rely on)",
+        ]
+        for c in prior_claims:
+            lines.append(
+                f"- [past claim, confidence {c.get('confidence', 0.0):.2f}] "
+                f"{c.get('text', '')}"
+            )
+        for h in prior_hyps:
+            lines.append(
+                f"- [past hypothesis, confidence {h.get('confidence', 0.0):.2f}] "
+                f"{h.get('text', '')}"
+            )
+        return "\n".join(lines)
+
     # ─── Prompt Builders ──────────────────────────────────────────────────
 
     def _build_research_prompt(self, objective, plan, iteration, web_context=""):
@@ -504,7 +575,13 @@ class Orchestrator:
             f"Identify contradictions, credibility issues, and knowledge gaps."
         )
 
-    def _build_synthesis_prompt(self, claims, existing_hypotheses):
+    def _build_synthesis_prompt(
+        self, claims, existing_hypotheses,
+        open_contradictions=None, unresolved_gaps=None,
+    ):
+        # Note: synthesis runs in parallel with the skeptic on the same
+        # snapshot, so contradictions/gaps shown here are from PREVIOUS
+        # iterations — resolution naturally lags detection by one iteration.
         max_claims = 60
         max_existing_hypotheses = 30
         selected_claims = sorted(
@@ -527,6 +604,15 @@ class Orchestrator:
             for h in selected_hypotheses
         ) if selected_hypotheses else "  (No existing hypotheses)"
 
+        contradictions_text = "\n".join(
+            f"  - {a} vs {b}"
+            for a, b in sorted(tuple(sorted(p)) for p in (open_contradictions or set()))
+        ) or "  (No open contradictions)"
+        gaps_text = "\n".join(
+            f"  [{g.id}] {g.description} (severity: {g.severity})"
+            for g in (unresolved_gaps or [])[:20]
+        ) or "  (No unresolved knowledge gaps)"
+
         return (
             f"Synthesize the following claims into coherent hypotheses.\n\n"
             f"Context limits:\n"
@@ -535,7 +621,17 @@ class Orchestrator:
             f"of {len(existing_hypotheses)}\n\n"
             f"Current claims:\n{claims_text}\n\n"
             f"Existing hypotheses:\n{existing}\n\n"
+            f"Open contradictions (claim ID pairs flagged by the skeptic):\n"
+            f"{contradictions_text}\n\n"
+            f"Unresolved knowledge gaps:\n{gaps_text}\n\n"
             "Form new hypotheses or update existing ones. Reference claim IDs.\n\n"
+            "Resolution duties:\n"
+            "- If the evidence now settles an open contradiction listed above,\n"
+            "  add it to resolved_contradictions with claim_id_a, claim_id_b,\n"
+            "  and a one-sentence resolution. ONLY use pairs from the list.\n"
+            "- If the evidence now adequately addresses an unresolved gap\n"
+            "  listed above, add its ID to resolved_gap_ids. ONLY use IDs\n"
+            "  from the list. Do NOT mark anything resolved speculatively.\n\n"
             "Strict output constraints:\n"
             "- Return at most 8 hypotheses.\n"
             "- Return at most 20 merged_claims.\n"
@@ -598,16 +694,14 @@ class Orchestrator:
         source_ids = [s.id for s in sources]
 
         for claim in claims_output.claims:
-            # Map source_id to an actual registered source
+            # GUARDRAIL: never reattribute a claim to a source it did not
+            # come from — drop claims with unknown source IDs instead.
             if claim.source_id not in source_ids:
-                # Use the first available source as fallback
-                if source_ids:
-                    claim.source_id = source_ids[0]
-                else:
-                    logger.warning(
-                        "Skipping claim without valid source: %s", claim.subject
-                    )
-                    continue
+                logger.warning(
+                    "Skipping claim with unknown source_id '%s': %s",
+                    claim.source_id, claim.subject,
+                )
+                continue
             try:
                 persisted_claim = self.memory.add_claim(claim)
                 persisted.append(persisted_claim)
@@ -623,12 +717,20 @@ class Orchestrator:
         Returns:
             List of contradiction tuples (claim_id_a, claim_id_b) where severity > 0.
         """
-        positive_contradictions = [
-            (c.claim_id_a, c.claim_id_b)
-            for c in skeptic_output.contradictions
-            if c.severity > 0
-        ]
-        self.total_contradictions += len(positive_contradictions)
+        positive_contradictions = []
+        for c in skeptic_output.contradictions:
+            if c.severity <= 0:
+                continue
+            pair = frozenset((c.claim_id_a, c.claim_id_b))
+            if len(pair) < 2:
+                continue  # self-contradiction reports are noise
+            positive_contradictions.append((c.claim_id_a, c.claim_id_b))
+            # Only count a pair once, even if the skeptic re-reports it
+            # in later iterations.
+            if pair not in self.seen_contradiction_pairs:
+                self.seen_contradiction_pairs.add(pair)
+                self.open_contradiction_pairs.add(pair)
+                self.total_contradictions += 1
 
         # Apply credibility challenges
         for challenge in skeptic_output.credibility_challenges:
@@ -658,6 +760,27 @@ class Orchestrator:
                 raise
 
         return positive_contradictions
+
+    def _process_synthesis_resolutions(self, synthesis_output) -> None:
+        """
+        Apply contradiction and knowledge-gap resolutions reported by the
+        Synthesis agent. Only pairs/IDs that are actually open are accepted,
+        so the model cannot inflate scores by "resolving" things it was
+        never shown.
+        """
+        for res in (synthesis_output.resolved_contradictions or []):
+            pair = frozenset((res.claim_id_a, res.claim_id_b))
+            if pair in self.open_contradiction_pairs:
+                self.open_contradiction_pairs.discard(pair)
+                self.resolved_contradictions += 1
+                logger.info(
+                    "Contradiction resolved (%s vs %s): %s",
+                    res.claim_id_a, res.claim_id_b, res.resolution[:120],
+                )
+
+        for gap_id in (synthesis_output.resolved_gap_ids or []):
+            if self.memory.resolve_knowledge_gap(gap_id):
+                logger.info("Knowledge gap resolved: %s", gap_id)
 
     def _apply_contradiction_influence(
         self,
@@ -701,15 +824,13 @@ class Orchestrator:
             ]
 
             if not valid_supporting:
-                # Try to assign at least one claim
-                if all_claims:
-                    valid_supporting = [all_claims[0].id]
-                else:
-                    logger.warning(
-                        "Skipping hypothesis without supporting claims: %s",
-                        hyp.statement[:80],
-                    )
-                    continue
+                # GUARDRAIL: never fabricate support by attaching an
+                # unrelated claim — drop the hypothesis instead.
+                logger.warning(
+                    "Skipping hypothesis without valid supporting claims: %s",
+                    hyp.statement[:80],
+                )
+                continue
 
             hyp.supporting_claim_ids = valid_supporting
             hyp.opposing_claim_ids = valid_opposing
@@ -797,10 +918,14 @@ class Orchestrator:
                 )
 
                 # Single-source guardrail: multiple supporting claims from one
-                # source are still single-source evidence.
-                unique_support_sources = {
-                    claim.source_id for claim in supporting
-                }
+                # source are still single-source evidence. Corroborating
+                # sources recorded during claim merges count as independent.
+                unique_support_sources = set()
+                for claim in supporting:
+                    unique_support_sources.add(claim.source_id)
+                    unique_support_sources.update(
+                        claim.corroborating_source_ids or []
+                    )
                 if len(unique_support_sources) < 2:
                     eff_conf = min(eff_conf, 0.85)
 
@@ -817,6 +942,38 @@ class Orchestrator:
             avg_effective_confidence = sum(effective_confidences) / len(effective_confidences)
 
         # Novelty score
+        novelty = self._compute_novelty(prior_art_similarity, has_innovations)
+
+        return IterationMetrics(
+            iteration=iteration,
+            hypothesis_confidence=round(avg_effective_confidence, 6),
+            raw_confidence=round(avg_raw_confidence, 6),
+            epistemic_risk=epistemic_risk,
+            risk_floor_applied=risk_floor_applied,
+            novelty_score=novelty,
+            new_claims_count=new_claims_count,
+            total_claims_count=len(all_claims),
+            total_sources_count=self.memory.source_registry.count_sources(),
+            unresolved_gaps_count=len(unresolved_gaps),
+            gap_count_before=gap_count_before,
+            gap_count_after=gap_count_after,
+            contradiction_cycle_count=self.contradiction_cycle_count,
+            token_usage=tokens_this_iter,
+        )
+
+    def _compute_novelty(
+        self,
+        prior_art_similarity: float,
+        has_innovations: bool,
+    ) -> float:
+        """
+        Compute the novelty score from the current memory state.
+
+        Separated from _compute_iteration_metrics so it can be recomputed
+        after the Innovation agent runs — metrics are first computed before
+        innovation (the reflection prompt needs them), at which point
+        has_innovations is not yet known.
+        """
         graph_bridge = self.memory.get_graph_bridge_score()
         contradiction_resolution = compute_contradiction_resolution_score(
             self.total_contradictions, self.resolved_contradictions
@@ -836,22 +993,7 @@ class Orchestrator:
         if not has_innovations:
             novelty = min(novelty, 0.5)
 
-        return IterationMetrics(
-            iteration=iteration,
-            hypothesis_confidence=round(avg_effective_confidence, 6),
-            raw_confidence=round(avg_raw_confidence, 6),
-            epistemic_risk=epistemic_risk,
-            risk_floor_applied=risk_floor_applied,
-            novelty_score=novelty,
-            new_claims_count=new_claims_count,
-            total_claims_count=len(all_claims),
-            total_sources_count=self.memory.source_registry.count_sources(),
-            unresolved_gaps_count=len(unresolved_gaps),
-            gap_count_before=gap_count_before,
-            gap_count_after=gap_count_after,
-            contradiction_cycle_count=self.contradiction_cycle_count,
-            token_usage=tokens_this_iter,
-        )
+        return novelty
 
     # ─── Report Generation ────────────────────────────────────────────────
 
@@ -1035,34 +1177,14 @@ class Orchestrator:
                 f"Write ONLY the conclusion text, no JSON, no headers, no formatting."
             )
 
-            from schemas.agent_io import ReflectionOutput
-            # Use a simple raw LLM call for conclusion (not schema-validated)
-            from config import ModelConfig
-            model_config = self.config.get_model_config("synthesis")
-
-            messages = [{"role": "user", "content": prompt}]
-
-            # Direct API call for plain text
-            headers = {
-                "Authorization": f"Bearer {self.config.openrouter_api_key}",
-                "Content-Type": "application/json",
-            }
-            payload = {
-                "model": model_config.model_id,
-                "messages": messages,
-                "temperature": 0.4,
-                "max_tokens": 800,
-            }
-            import requests as req
-            response = req.post(
-                self.config.openrouter_base_url,
-                headers=headers,
-                data=json.dumps(payload),
-                timeout=120,
+            # Plain-text call through the gateway (per-model key routing,
+            # retries, and token accounting — no direct API calls).
+            conclusion = self.gateway.call_text(
+                agent_name="synthesis",
+                messages=[{"role": "user", "content": prompt}],
+                temperature=0.4,
+                max_tokens=800,
             )
-            response.raise_for_status()
-            result = response.json()
-            conclusion = result["choices"][0]["message"]["content"].strip()
 
             logger.info("Generated conclusion (%d chars)", len(conclusion))
             return conclusion
@@ -1072,15 +1194,14 @@ class Orchestrator:
             # Fallback: build a basic conclusion from hypotheses
             if hypotheses:
                 best = max(hypotheses, key=lambda h: getattr(h, 'confidence', 0))
+                risk_text = (
+                    f"{last_metrics.epistemic_risk:.1%}"
+                    if last_metrics else "unknown"
+                )
                 return (
                     f"Based on the analysis of {len(key_claims)} claims across "
                     f"multiple sources, the strongest finding is: {best.statement} "
                     f"(confidence: {best.confidence:.1%}). "
-                    f"This conclusion carries an epistemic risk of "
-                    f"{last_metrics.epistemic_risk:.1% if last_metrics else 'unknown'}."
+                    f"This conclusion carries an epistemic risk of {risk_text}."
                 )
-            return "Insufficient evidence to draw a definitive conclusion."
-
-        except Exception as exc:
-            logger.warning("Failed to generate conclusion: %s", exc)
             return "Insufficient evidence to draw a definitive conclusion."

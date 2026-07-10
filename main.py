@@ -216,6 +216,7 @@ def main(
         sys.exit(1)
     finally:
         memory.close()
+        session_logger.close()
 
 
 if __name__ == "__main__":

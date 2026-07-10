@@ -1,4 +1,5 @@
 import { useState, useEffect, useRef, useCallback } from 'react'
+import { apiFetch, streamUrl } from './api'
 import AgentNetworkMap from './AgentNetworkMap'
 import HypothesisDeepDive from './HypothesisDeepDive'
 import ReportExport from './ReportExport'
@@ -30,7 +31,7 @@ export default function App() {
   const eventSourceRef = useRef(null)
 
   useEffect(() => {
-    fetch('/api/sessions').then(r => r.json()).then(setSessions).catch(() => {})
+    apiFetch('/api/sessions').then(r => r.json()).then(setSessions).catch(() => {})
   }, [])
 
   const loadReport = useCallback((sessionId) => {
@@ -39,7 +40,7 @@ export default function App() {
     setActiveNav('dashboard')
     setError(null)
     setDeepDiveHypothesis(null)
-    fetch(`/api/report/${sessionId}`)
+    apiFetch(`/api/report/${sessionId}`)
       .then(r => r.json())
       .then(data => { if (data.error) { setError(data.error); return }; setActiveReport(data); setCachedReports(prev => ({ ...prev, [sessionId]: data })) })
       .catch(e => setError(e.message))
@@ -51,7 +52,7 @@ export default function App() {
     setAgentStates({}); setCurrentIteration(0); setProgressMsg('Initializing agents...')
     setViewingLive(true); setInputExpanded(false)
 
-    fetch('/api/run', {
+    apiFetch('/api/run', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ objective, mode, max_iterations: maxIterations }),
@@ -60,7 +61,7 @@ export default function App() {
       .then(({ session_id }) => {
         setActiveSessionId(session_id)
         if (eventSourceRef.current) eventSourceRef.current.close()
-        const es = new EventSource(`/api/stream/${session_id}`)
+        const es = new EventSource(streamUrl(`/api/stream/${session_id}`))
         eventSourceRef.current = es
         es.onmessage = (e) => {
           const data = JSON.parse(e.data)
@@ -73,9 +74,9 @@ export default function App() {
           if (data.type === 'iteration_complete') {
             setCurrentIteration(data.iteration); setProgressMsg(`Iteration ${data.iteration} complete`); setAgentStates({})
           }
-          if (data.type === 'complete') { setActiveReport(data.report); setIsRunning(false); setViewingLive(true); es.close(); eventSourceRef.current = null; fetch('/api/sessions').then(r => r.json()).then(setSessions).catch(() => {}) }
+          if (data.type === 'complete') { setActiveReport(data.report); setIsRunning(false); setViewingLive(true); es.close(); eventSourceRef.current = null; apiFetch('/api/sessions').then(r => r.json()).then(setSessions).catch(() => {}) }
           if (data.type === 'error') { setError(data.message); setIsRunning(false); es.close(); eventSourceRef.current = null }
-          if (data.type === 'done') { setIsRunning(false); es.close(); eventSourceRef.current = null; fetch('/api/sessions').then(r => r.json()).then(setSessions).catch(() => {}) }
+          if (data.type === 'done') { setIsRunning(false); es.close(); eventSourceRef.current = null; apiFetch('/api/sessions').then(r => r.json()).then(setSessions).catch(() => {}) }
         }
         es.onerror = () => { setIsRunning(false); es.close(); eventSourceRef.current = null }
       })

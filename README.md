@@ -249,8 +249,9 @@ docker run -p 5000:5000 --env-file .env aro
 ```
 
 The Docker image uses:
-- **Python 3.12 slim** + multi-stage build (~250MB)
-- **Gunicorn** with 4 gthread workers (300s timeout for long research sessions)
+- **Python 3.12 slim** + multi-stage build
+- **Gunicorn** with a single gthread worker × 16 threads (session progress state is in-process; 300s timeout for long research sessions)
+- Runs as a **non-root user**
 - Built-in **health check** at `/api/health`
 - Persistent **vector store** volume for cross-session memory
 
@@ -270,7 +271,7 @@ curl http://localhost:5000/api/health
 | `OPENROUTER_API_KEY` | ✅ | Default API key (Trinity Large Preview) |
 | `OPENROUTER_API_KEY_STEP` | Optional | API key for Step 3.5 Flash (falls back to default) |
 | `OPENROUTER_API_KEY_GPT_OSS` | Optional | API key for GPT-OSS-120B (falls back to default) |
-| `ARO_API_KEY` | Optional | Protect `/api/` endpoints (leave empty to disable auth) |
+| `ARO_API_KEY` | Optional | Protect `/api/` endpoints (leave empty to disable auth). To use the dashboard with auth enabled, store the same key in the browser once: `localStorage.setItem('aro_api_key', '<key>')` — fetches send it as `X-API-Key`; the SSE stream passes it as an `api_key` query parameter |
 | `ARO_HOST` | Optional | Server bind address (default: `127.0.0.1`) |
 | `ARO_PORT` | Optional | Server port (default: `5000`) |
 | `ARO_MAX_CONCURRENT` | Optional | Max concurrent research sessions (default: `3`) |
@@ -295,6 +296,7 @@ curl http://localhost:5000/api/health
 - [Mathematical Models](docs/mathematical_models.md)
 - [Agent Contracts](docs/agent_contracts.md)
 - [Reasoning Mode](docs/reasoning_mode.md)
+- [Project Review & Improvement Plan](docs/project_review.md)
 - [Security Policy](SECURITY.md)
 
 ---

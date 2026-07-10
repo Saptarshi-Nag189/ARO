@@ -308,6 +308,76 @@ class ModelGateway:
             logger.error("Streaming failed for %s: %s", agent_name, e)
             raise ModelGatewayError(f"Streaming failed: {e}")
 
+    def call_text(
+        self,
+        agent_name: str,
+        messages: List[Dict[str, str]],
+        system_prompt: Optional[str] = None,
+        temperature: Optional[float] = None,
+        max_tokens: Optional[int] = None,
+    ) -> str:
+        """
+        Plain-text model call (no schema validation, no JSON response_format).
+
+        Used for free-form outputs like the final report conclusion. Applies
+        the same per-model API key routing, retry/backoff, and token
+        accounting as call().
+        """
+        model_config = self.config.get_model_config(agent_name)
+        api_key = self.config.get_api_key_for_model(model_config.model_id)
+
+        full_messages = []
+        if system_prompt:
+            full_messages.append({"role": "system", "content": system_prompt})
+        full_messages.extend(messages)
+
+        headers = {
+            "Authorization": f"Bearer {api_key}",
+            "Content-Type": "application/json",
+        }
+        payload = {
+            "model": model_config.model_id,
+            "messages": full_messages,
+            "temperature": (
+                temperature if temperature is not None else model_config.temperature
+            ),
+            "max_tokens": (
+                max_tokens if max_tokens is not None else model_config.max_tokens
+            ),
+        }
+
+        last_error = None
+        for attempt in range(1, self.max_retries + 1):
+            try:
+                response = requests.post(
+                    self.base_url,
+                    headers=headers,
+                    data=json.dumps(payload),
+                    timeout=120,
+                )
+                response.raise_for_status()
+                result = response.json()
+                content = result["choices"][0]["message"]["content"] or ""
+
+                usage = result.get("usage", {})
+                self._total_tokens_used += usage.get("total_tokens", 0)
+
+                return content.strip()
+
+            except (requests.RequestException, KeyError, ValueError) as e:
+                last_error = e
+                logger.warning(
+                    "Gateway text call failed [%s] attempt %d/%d: %s",
+                    agent_name, attempt, self.max_retries, str(e)[:200],
+                )
+                if attempt < self.max_retries:
+                    time.sleep(2 ** attempt)
+
+        raise ModelGatewayError(
+            f"All {self.max_retries} text attempts failed for agent "
+            f"'{agent_name}'. Last error: {last_error}"
+        )
+
     def call(
         self,
         agent_name: str,
