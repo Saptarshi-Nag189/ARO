@@ -4,11 +4,12 @@ Flask-Cors==6.0.2
 pydantic==2.12.5
 
 # ── LangGraph Engine (v3) ───────────
-langgraph>=0.4,<0.7
-langchain-core>=0.3,<0.4
-langchain-openai>=0.3,<0.4
-langgraph-checkpoint-sqlite>=2.0
-langsmith>=0.3
+# (bounds match the tested stack: langgraph 1.2.x / langchain 1.x)
+langgraph>=1.0,<2
+langchain-core>=1.0,<2
+langchain-openai>=1.0,<2
+langgraph-checkpoint-sqlite>=3.0,<4
+langsmith>=0.4
 
 # Optional providers / backends (pluggable, enabled via env vars):
 #   pip install langgraph-checkpoint-postgres   # ARO_CHECKPOINT_URI=postgresql://...

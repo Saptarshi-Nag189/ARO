@@ -54,7 +54,18 @@ def _allowed_state_classes() -> list:
 
 
 def _serde() -> JsonPlusSerializer:
-    return JsonPlusSerializer(allowed_msgpack_modules=_allowed_state_classes())
+    """Serializer with our schema classes allowlisted.
+
+    Tolerates serde API differences across langgraph-checkpoint versions:
+    if this version doesn't accept an explicit allowlist, fall back to the
+    default (permissive) serializer rather than failing to construct.
+    """
+    import inspect
+
+    params = inspect.signature(JsonPlusSerializer.__init__).parameters
+    if "allowed_msgpack_modules" in params:
+        return JsonPlusSerializer(allowed_msgpack_modules=_allowed_state_classes())
+    return JsonPlusSerializer()
 
 
 def get_checkpointer(base_dir: Optional[str] = None) -> BaseCheckpointSaver:
