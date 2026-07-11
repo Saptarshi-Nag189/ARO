@@ -128,6 +128,17 @@ class ResearchNodes:
 
     def plan(self, state: ResearchState) -> Dict[str, Any]:
         """(Re)plan the research: decompose the objective into sub-questions."""
+        # Cross-session memory recall (vector-store read path): computed once,
+        # on the first plan, then carried in checkpointed state.
+        prior_knowledge = state.get("prior_knowledge_block")
+        if prior_knowledge is None:
+            prior_knowledge = self._build_prior_knowledge_block(state["objective"])
+            if prior_knowledge:
+                logger.info(
+                    "Injecting %d chars of prior-session knowledge into prompts",
+                    len(prior_knowledge),
+                )
+
         context: Optional[Dict[str, Any]] = None
         reflection = state.get("reflection_output")
         if state.get("need_replan") and reflection is not None:
@@ -142,6 +153,8 @@ class ResearchNodes:
             }
             if state.get("human_directive"):
                 context["human_directive"] = state["human_directive"]
+        elif prior_knowledge and state.get("iteration", 1) == 1:
+            context = {"prior_knowledge_from_past_sessions": prior_knowledge}
 
         prompt = prompts.build_planner_prompt(state["objective"], context)
         output, tokens, entry = self._run_agent(
@@ -153,7 +166,39 @@ class ResearchNodes:
             "agent_calls": [entry],
             "need_replan": False,
             "human_directive": None,
+            "prior_knowledge_block": prior_knowledge,
         }
+
+    def _build_prior_knowledge_block(self, objective: str) -> str:
+        """Semantically relevant claims/hypotheses from past sessions,
+        formatted for prompt injection. "" when unavailable or empty."""
+        try:
+            prior_claims = self.memory.get_prior_knowledge(objective, top_k=5)
+            prior_hyps = self.memory.get_prior_hypotheses(objective, top_k=3)
+        except Exception as exc:
+            logger.debug("Prior-knowledge retrieval failed: %s", exc)
+            return ""
+
+        if not prior_claims and not prior_hyps:
+            return ""
+
+        lines = [
+            "PRIOR KNOWLEDGE FROM PAST RESEARCH SESSIONS:",
+            "(semantic matches from earlier sessions of this ARO instance —"
+            " treat as leads to verify, not as evidence; re-source anything"
+            " you rely on)",
+        ]
+        for c in prior_claims:
+            lines.append(
+                f"- [past claim, confidence {c.get('confidence', 0.0):.2f}] "
+                f"{c.get('text', '')}"
+            )
+        for h in prior_hyps:
+            lines.append(
+                f"- [past hypothesis, confidence {h.get('confidence', 0.0):.2f}] "
+                f"{h.get('text', '')}"
+            )
+        return "\n".join(lines)
 
     def web_search(self, state: ResearchState) -> Dict[str, Any]:
         """Run real multi-engine web research for the current plan."""
@@ -189,6 +234,8 @@ class ResearchNodes:
             state.get("iteration", 1),
             web_context=state.get("web_context", ""),
         )
+        if state.get("iteration", 1) == 1 and state.get("prior_knowledge_block"):
+            prompt += f"\n\n{state['prior_knowledge_block']}\n"
         output, tokens, entry = self._run_agent(
             "research", prompt, state.get("iteration", 1)
         )
@@ -222,12 +269,14 @@ class ResearchNodes:
         persisted = []
         source_ids = [s.id for s in sources]
         for claim in output.claims:
+            # GUARDRAIL: never reattribute a claim to a source it did not
+            # come from — drop claims with unknown source IDs instead.
             if claim.source_id not in source_ids:
-                if source_ids:
-                    claim.source_id = source_ids[0]
-                else:
-                    logger.warning("Skipping claim without valid source: %s", claim.subject)
-                    continue
+                logger.warning(
+                    "Skipping claim with unknown source_id '%s': %s",
+                    claim.source_id, claim.subject,
+                )
+                continue
             try:
                 persisted.append(self.memory.add_claim(claim))
             except ValueError as exc:
@@ -237,7 +286,9 @@ class ResearchNodes:
             1 for c in persisted if c.confidence_estimate >= 0.7
         )
 
-        # Snapshot for the parallel skeptic ‖ synthesis branches
+        # Snapshot for the parallel skeptic ‖ synthesis branches. The gaps
+        # snapshot is shown to synthesis for resolution duty — it is from
+        # PREVIOUS iterations by construction (skeptic runs in parallel).
         return {
             "source_ids": source_ids,
             "new_claim_ids": [c.id for c in persisted],
@@ -245,6 +296,7 @@ class ResearchNodes:
             "gap_count_before": len(self.memory.get_all_knowledge_gaps()),
             "claims_snapshot": self.memory.get_all_claims(),
             "hypotheses_snapshot": self.memory.get_all_hypotheses(),
+            "gaps_snapshot": self.memory.get_unresolved_gaps(),
             "tokens_used": tokens,
             "agent_calls": [entry],
         }
@@ -260,9 +312,16 @@ class ResearchNodes:
         return {"skeptic_output": output, "tokens_used": tokens, "agent_calls": [entry]}
 
     def synthesis(self, state: ResearchState) -> Dict[str, Any]:
-        """Pure LLM branch: hypotheses from the claims snapshot."""
+        """Pure LLM branch: hypotheses from the claims snapshot, plus
+        resolution duty over open contradictions and unresolved gaps."""
+        open_pairs = {
+            frozenset(pair) for pair in state.get("open_contradiction_pairs", [])
+        }
         prompt = prompts.build_synthesis_prompt(
-            state["claims_snapshot"], state["hypotheses_snapshot"]
+            state["claims_snapshot"],
+            state["hypotheses_snapshot"],
+            open_contradictions=open_pairs,
+            unresolved_gaps=state.get("gaps_snapshot", []),
         )
         output, tokens, entry = self._run_agent(
             "synthesis", prompt, state.get("iteration", 1)
@@ -270,16 +329,30 @@ class ResearchNodes:
         return {"synthesis_output": output, "tokens_used": tokens, "agent_calls": [entry]}
 
     def integrate(self, state: ResearchState) -> Dict[str, Any]:
-        """Fan-in: apply skeptic findings, persist hypotheses (single writer)."""
+        """Fan-in: apply skeptic findings, persist hypotheses, and process
+        synthesis resolutions (single writer)."""
         skeptic_output = state["skeptic_output"]
         synthesis_output = state["synthesis_output"]
 
-        # Process skeptic findings
-        positive_contradictions = [
-            (c.claim_id_a, c.claim_id_b)
-            for c in skeptic_output.contradictions
-            if c.severity > 0
-        ]
+        # Contradiction bookkeeping: pairs are frozensets so (a, b) == (b, a);
+        # `seen` prevents the skeptic from re-counting a pair it re-reports
+        # across iterations, `open` holds pairs synthesis hasn't resolved.
+        seen_pairs = {frozenset(p) for p in state.get("seen_contradiction_pairs", [])}
+        open_pairs = {frozenset(p) for p in state.get("open_contradiction_pairs", [])}
+        total_contradictions = state.get("total_contradictions", 0)
+
+        positive_contradictions = []
+        for c in skeptic_output.contradictions:
+            if c.severity <= 0:
+                continue
+            pair = frozenset((c.claim_id_a, c.claim_id_b))
+            if len(pair) < 2:
+                continue  # self-contradiction reports are noise
+            positive_contradictions.append((c.claim_id_a, c.claim_id_b))
+            if pair not in seen_pairs:
+                seen_pairs.add(pair)
+                open_pairs.add(pair)
+                total_contradictions += 1
 
         for challenge in skeptic_output.credibility_challenges:
             try:
@@ -314,14 +387,13 @@ class ResearchNodes:
             valid_supporting = [cid for cid in hyp.supporting_claim_ids if cid in claim_ids]
             valid_opposing = [cid for cid in hyp.opposing_claim_ids if cid in claim_ids]
             if not valid_supporting:
-                if all_claims:
-                    valid_supporting = [all_claims[0].id]
-                else:
-                    logger.warning(
-                        "Skipping hypothesis without supporting claims: %s",
-                        hyp.statement[:80],
-                    )
-                    continue
+                # GUARDRAIL: never fabricate support by attaching an
+                # unrelated claim — drop the hypothesis instead.
+                logger.warning(
+                    "Skipping hypothesis without valid supporting claims: %s",
+                    hyp.statement[:80],
+                )
+                continue
             hyp.supporting_claim_ids = valid_supporting
             hyp.opposing_claim_ids = valid_opposing
             try:
@@ -333,12 +405,31 @@ class ResearchNodes:
             except ValueError as exc:
                 logger.warning("Guardrail blocked hypothesis: %s", exc)
 
+        # Synthesis resolution duty: only pairs that are actually open and
+        # gaps that exist can be resolved — the model cannot inflate scores
+        # by "resolving" things it was never shown.
+        resolved_contradictions = state.get("resolved_contradictions", 0)
+        for res in (synthesis_output.resolved_contradictions or []):
+            pair = frozenset((res.claim_id_a, res.claim_id_b))
+            if pair in open_pairs:
+                open_pairs.discard(pair)
+                resolved_contradictions += 1
+                logger.info(
+                    "Contradiction resolved (%s vs %s): %s",
+                    res.claim_id_a, res.claim_id_b, res.resolution[:120],
+                )
+        shown_gap_ids = {g.id for g in state.get("gaps_snapshot", [])}
+        for gap_id in (synthesis_output.resolved_gap_ids or []):
+            if gap_id in shown_gap_ids and self.memory.resolve_knowledge_gap(gap_id):
+                logger.info("Knowledge gap resolved: %s", gap_id)
+
         updates: Dict[str, Any] = {
             "gap_count_after": gap_count_after,
             "skeptic_detected_gap_count": skeptic_detected,
-            "total_contradictions": (
-                state.get("total_contradictions", 0) + len(positive_contradictions)
-            ),
+            "total_contradictions": total_contradictions,
+            "resolved_contradictions": resolved_contradictions,
+            "seen_contradiction_pairs": [sorted(p) for p in seen_pairs],
+            "open_contradiction_pairs": [sorted(p) for p in open_pairs],
             "claims_snapshot": all_claims,
         }
 
@@ -372,12 +463,19 @@ class ResearchNodes:
         prior_art: Dict[str, Any] = {}
         prior_art_similarity = 0.5
         if state.get("mode") == "innovation":
-            # GUARDRAIL: prior-art scan required before innovation
-            prior_art = self.prior_art_tool.scan(
-                state["objective"],
-                state["synthesis_output"].narrative_summary,
-            )
-            prior_art_similarity = prior_art.get("estimated_prior_art_similarity", 0.5)
+            # GUARDRAIL: prior-art scan required before innovation.
+            # (Offline mode keeps the neutral 0.5 — the scan hits Semantic
+            # Scholar / OpenAlex.)
+            if use_fake_model():
+                prior_art = {"estimated_prior_art_similarity": 0.5, "offline": True}
+            else:
+                prior_art = self.prior_art_tool.scan(
+                    state["objective"],
+                    state["synthesis_output"].narrative_summary,
+                )
+                prior_art_similarity = prior_art.get(
+                    "estimated_prior_art_similarity", 0.5
+                )
 
         metrics = self._compute_iteration_metrics(state, prior_art_similarity)
 
@@ -442,8 +540,15 @@ class ResearchNodes:
                     contradiction_cycle_count=state.get("contradiction_cycle_count", 0),
                 )
 
-                # Single-source guardrail
-                unique_support_sources = {claim.source_id for claim in supporting}
+                # Single-source guardrail: multiple supporting claims from one
+                # source are still single-source evidence. Corroborating
+                # sources recorded during claim merges count as independent.
+                unique_support_sources = set()
+                for claim in supporting:
+                    unique_support_sources.add(claim.source_id)
+                    unique_support_sources.update(
+                        getattr(claim, "corroborating_source_ids", None) or []
+                    )
                 if len(unique_support_sources) < 2:
                     eff_conf = min(eff_conf, 0.85)
 
@@ -458,21 +563,10 @@ class ResearchNodes:
             avg_raw_confidence = sum(raw_confidences) / len(raw_confidences)
             avg_effective_confidence = sum(effective_confidences) / len(effective_confidences)
 
-        all_gaps = self.memory.get_all_knowledge_gaps()
-        novelty = compute_novelty_score(
-            graph_bridge_score=self.memory.get_graph_bridge_score(),
-            contradiction_resolution_score=compute_contradiction_resolution_score(
-                state.get("total_contradictions", 0),
-                state.get("resolved_contradictions", 0),
-            ),
-            prior_art_similarity=prior_art_similarity,
-            knowledge_gap_coverage=compute_knowledge_gap_coverage(
-                len(all_gaps), sum(1 for g in all_gaps if g.resolved)
-            ),
-        )
-        # Metrics are computed before the innovation branch runs, so the
-        # no-innovations novelty cap always applies here (v2 parity).
-        novelty = min(novelty, 0.5)
+        # Metrics are computed before the innovation branch runs, so
+        # has_innovations is not yet known here; record() recomputes novelty
+        # once it is (lifting the 0.5 cap when proposals were generated).
+        novelty = self._compute_novelty(state, prior_art_similarity, has_innovations=False)
 
         return IterationMetrics(
             iteration=state.get("iteration", 1),
@@ -490,6 +584,30 @@ class ResearchNodes:
             contradiction_cycle_count=state.get("contradiction_cycle_count", 0),
             token_usage=0,  # finalized in record()
         )
+
+    def _compute_novelty(
+        self,
+        state: ResearchState,
+        prior_art_similarity: float,
+        has_innovations: bool,
+    ) -> float:
+        """Novelty from the current memory state. Separated so record() can
+        recompute it after the Innovation branch runs."""
+        all_gaps = self.memory.get_all_knowledge_gaps()
+        novelty = compute_novelty_score(
+            graph_bridge_score=self.memory.get_graph_bridge_score(),
+            contradiction_resolution_score=compute_contradiction_resolution_score(
+                state.get("total_contradictions", 0),
+                state.get("resolved_contradictions", 0),
+            ),
+            prior_art_similarity=prior_art_similarity,
+            knowledge_gap_coverage=compute_knowledge_gap_coverage(
+                len(all_gaps), sum(1 for g in all_gaps if g.resolved)
+            ),
+        )
+        if not has_innovations:
+            novelty = min(novelty, 0.5)
+        return novelty
 
     def innovation(self, state: ResearchState) -> Dict[str, Any]:
         """Pure LLM branch (innovation mode only): patent-grade proposals."""
@@ -529,6 +647,15 @@ class ResearchNodes:
         metrics.execution_time_seconds = round(
             time.time() - state.get("iteration_started_at", time.time()), 3
         )
+
+        # Recompute novelty now that we know whether innovations were
+        # generated — compute_metrics assumed has_innovations=False and
+        # would otherwise cap novelty at 0.5 permanently.
+        innovation_output = state.get("innovation_output")
+        if innovation_output and innovation_output.proposals:
+            metrics.novelty_score = self._compute_novelty(
+                state, state.get("prior_art_similarity", 0.5), has_innovations=True
+            )
 
         iteration_metrics = list(state.get("iteration_metrics", [])) + [metrics]
         risk_history = list(state.get("risk_history", [])) + [metrics.epistemic_risk]
@@ -587,10 +714,6 @@ class ResearchNodes:
                 new_high_confidence_claims=claims,
             )
         should_stop, reason = checker.should_terminate(iteration)
-        if not should_stop and iteration >= self.config.max_iterations:
-            should_stop, reason = True, (
-                f"Maximum iterations reached ({self.config.max_iterations})"
-            )
 
         logger.info("Iteration %d recorded. Terminate=%s (%s)", iteration, should_stop, reason)
 

@@ -14,6 +14,7 @@ Sources (all free, no API keys):
 
 import asyncio
 import logging
+import socket
 import time
 import re
 import ipaddress
@@ -37,22 +38,55 @@ MAX_TOTAL_CONTEXT = 15000    # total chars injected into prompt
 BLOCKED_HOSTNAMES = {"localhost", "127.0.0.1", "0.0.0.0", "::1", "169.254.169.254"}
 
 
+def _is_public_ip(ip: "ipaddress._BaseAddress") -> bool:
+    """True if the address is routable public space."""
+    return not (
+        ip.is_private
+        or ip.is_loopback
+        or ip.is_link_local
+        or ip.is_reserved
+        or ip.is_multicast
+        or ip.is_unspecified
+    )
+
+
 def _is_safe_url(url: str) -> bool:
-    """Validate URL is not targeting internal/private networks (SSRF protection)."""
+    """
+    Validate URL is not targeting internal/private networks (SSRF protection).
+
+    Resolve-then-verify: literal-IP checks alone can be bypassed by a
+    hostname that resolves to a private address (internal DNS, rebinding),
+    so every resolved address must be public.
+    """
     if not url or not url.startswith(("http://", "https://")):
         return False
     try:
         hostname = urlparse(url).hostname or ""
     except Exception:
         return False
-    if hostname.lower() in BLOCKED_HOSTNAMES:
+    if not hostname or hostname.lower() in BLOCKED_HOSTNAMES:
         return False
+
+    # Literal IP (covers decimal/octal encodings via ip_address parsing)
     try:
-        ip = ipaddress.ip_address(hostname)
-        if ip.is_private or ip.is_loopback or ip.is_link_local or ip.is_reserved:
-            return False
+        return _is_public_ip(ipaddress.ip_address(hostname))
     except ValueError:
         pass  # it is a hostname, not an IP address
+
+    # Hostname: resolve and verify every address it maps to
+    try:
+        infos = socket.getaddrinfo(hostname, None)
+    except (socket.gaierror, UnicodeError):
+        return False
+    addresses = {info[4][0] for info in infos}
+    if not addresses:
+        return False
+    for addr in addresses:
+        try:
+            if not _is_public_ip(ipaddress.ip_address(addr)):
+                return False
+        except ValueError:
+            return False
     return True
 
 

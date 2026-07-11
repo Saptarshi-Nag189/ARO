@@ -312,7 +312,7 @@ Full walkthrough, cost table, and teardown: [`docs/deployment_aws.md`](docs/depl
 | `ARO_MODEL_PROVIDER=bedrock` | route agents through AWS Bedrock |
 | `ARO_CHECKPOINT_URI` | Postgres checkpointer (default: SQLite) |
 | `LANGSMITH_TRACING` / `LANGSMITH_API_KEY` | full observability |
-| `ARO_API_KEY` | protect the web API |
+| `ARO_API_KEY` | protect the web API (dashboard: `localStorage.setItem('aro_api_key', '<key>')`; SSE passes it as an `api_key` query param) |
 | `ARO_HOST` / `ARO_PORT` / `ARO_MAX_CONCURRENT` | server tuning |
 
 ---
@@ -387,6 +387,8 @@ aro/
 - [System Architecture](docs/system_architecture.md)
 - [Mathematical Models](docs/mathematical_models.md)
 - [Agent Contracts](docs/agent_contracts.md)
+- [Reasoning Mode](docs/reasoning_mode.md)
+- [Project Review & Improvement Plan](docs/project_review.md)
 - [Security Policy](SECURITY.md)
 
 ## License

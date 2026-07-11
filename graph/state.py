@@ -49,6 +49,8 @@ class ResearchState(TypedDict, total=False):
     objective: str
     mode: str            # autonomous | interactive | innovation
     hitl: bool           # True -> interrupt() after each iteration (CLI interactive)
+    # Cross-session recall injected into the first plan/research prompts
+    prior_knowledge_block: str
 
     # ── Loop position ────────────────────────────────────────────────
     iteration: int
@@ -87,6 +89,11 @@ class ResearchState(TypedDict, total=False):
     new_claims_history: List[int]
     total_contradictions: int
     resolved_contradictions: int
+    # Contradiction bookkeeping: normalized sorted [a, b] claim-id pairs.
+    # `seen` dedupes skeptic re-reports across iterations; `open` holds
+    # pairs synthesis hasn't resolved yet.
+    seen_contradiction_pairs: List[List[str]]
+    open_contradiction_pairs: List[List[str]]
     contradiction_cycle_count: int
     skeptic_detected_gap_count: int
     last_token_snapshot: int

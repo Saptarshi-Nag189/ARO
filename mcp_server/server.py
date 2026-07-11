@@ -108,6 +108,8 @@ def fast_research(question: str) -> dict:
         return _summarize(result["final_report"].model_dump(mode="json"))
     finally:
         services.memory.close()
+        if services.session_logger:
+            services.session_logger.close()
 
 
 @mcp.tool
@@ -140,6 +142,8 @@ def deep_research(
         return _summarize(result["final_report"].model_dump(mode="json"))
     finally:
         services.memory.close()
+        if services.session_logger:
+            services.session_logger.close()
 
 
 @mcp.tool

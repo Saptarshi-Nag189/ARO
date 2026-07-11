@@ -3,6 +3,7 @@ Termination Conditions
 ======================
 Loop must stop when any of these conditions are met:
 
+0. Maximum iterations reached (hard ceiling)
 1. EpistemicRisk < 0.25 AND no new high-confidence claims in last 2 iterations
 2. NoveltyScore plateau (delta < 0.03 over 3 iterations)
 3. Budget cap exceeded
@@ -58,6 +59,13 @@ class TerminationChecker:
         Returns:
             (should_stop, reason) tuple.
         """
+        # Condition 0: Hard iteration ceiling — checked first so a user-set
+        # --max-iterations below min_iterations is still honored.
+        if current_iteration >= self.max_iterations:
+            return True, (
+                f"Maximum iterations reached ({self.max_iterations})"
+            )
+
         # Condition 4: Budget cap exceeded
         if self.budget_used >= self.budget_cap_usd:
             return True, (

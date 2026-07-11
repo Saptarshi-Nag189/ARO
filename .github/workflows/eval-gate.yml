@@ -16,6 +16,9 @@ on:
       - "evals/**"
       - "config.py"
 
+permissions:
+  contents: read
+
 jobs:
   quality-gate:
     name: LangSmith answer-quality gate

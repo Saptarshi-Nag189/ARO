@@ -60,6 +60,17 @@ class ClaimStore:
         else:
             merged_from.append(f"claim_{uuid.uuid4().hex[:12]}")
 
+        # Preserve multi-source corroboration: if the duplicate came from a
+        # different source, record it — otherwise merging erases the fact
+        # that several independent sources back this claim, and the
+        # single-source confidence cap misfires on corroborated hypotheses.
+        corroborating = list(existing.corroborating_source_ids or [])
+        known_sources = {existing.source_id, *corroborating}
+        for sid in [new.source_id, *(new.corroborating_source_ids or [])]:
+            if sid and sid not in known_sources:
+                corroborating.append(sid)
+                known_sources.add(sid)
+
         new_evidence_count = existing.evidence_count + 1
 
         # Recalculate confidence: weighted average by evidence count
@@ -78,6 +89,7 @@ class ClaimStore:
                 credibility_weight = ?,
                 evidence_count = ?,
                 merged_from = ?,
+                corroborating_source_ids = ?,
                 timestamp = ?
             WHERE id = ? AND session_id = ?
             """,
@@ -86,6 +98,7 @@ class ClaimStore:
                 round(new_credibility, 6),
                 new_evidence_count,
                 json.dumps(merged_from),
+                json.dumps(corroborating),
                 datetime.utcnow().isoformat(),
                 existing.id,
                 self.session_id,
@@ -98,6 +111,7 @@ class ClaimStore:
         existing.credibility_weight = round(new_credibility, 6)
         existing.evidence_count = new_evidence_count
         existing.merged_from = merged_from
+        existing.corroborating_source_ids = corroborating
         return existing
 
     def _insert_claim(self, claim: Claim) -> None:
@@ -107,8 +121,8 @@ class ClaimStore:
             INSERT INTO claims (id, session_id, subject, relation, object,
                                 qualifiers, source_id, confidence_estimate,
                                 credibility_weight, timestamp, merged_from,
-                                evidence_count)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                                corroborating_source_ids, evidence_count)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """,
             (
                 claim.id,
@@ -122,6 +136,7 @@ class ClaimStore:
                 claim.credibility_weight,
                 claim.timestamp.isoformat(),
                 json.dumps(claim.merged_from or []),
+                json.dumps(claim.corroborating_source_ids or []),
                 claim.evidence_count,
             ),
         )
@@ -184,5 +199,8 @@ class ClaimStore:
             credibility_weight=row["credibility_weight"],
             timestamp=datetime.fromisoformat(row["timestamp"]),
             merged_from=json.loads(row["merged_from"] or "[]"),
+            corroborating_source_ids=json.loads(
+                row["corroborating_source_ids"] or "[]"
+            ),
             evidence_count=row["evidence_count"],
         )

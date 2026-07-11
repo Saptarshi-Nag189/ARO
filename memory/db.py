@@ -192,9 +192,30 @@ def initialize_database(db_path: str = "aro_memory.db") -> sqlite3.Connection:
     conn = get_connection(db_path)
     conn.executescript(_CREATE_TABLES_SQL)
     _migrate_legacy_schema_if_needed(conn)
+    _ensure_column(conn, "claims", "corroborating_source_ids", "TEXT")
     _assert_schema_integrity(conn)
     conn.commit()
     return conn
+
+
+def _ensure_column(
+    conn: sqlite3.Connection,
+    table_name: str,
+    column_name: str,
+    column_type: str,
+) -> None:
+    """Add a column to an existing table if it is missing (additive migration)."""
+    _assert_safe_table_name(table_name)
+    existing = {
+        row["name"]
+        for row in conn.execute(f"PRAGMA table_info({table_name})").fetchall()
+    }
+    if column_name not in existing:
+        # column_name/column_type are internal constants, never user input
+        conn.execute(
+            f"ALTER TABLE {table_name} ADD COLUMN {column_name} {column_type}"
+        )
+        conn.commit()
 
 
 def _table_exists(conn: sqlite3.Connection, table_name: str) -> bool:

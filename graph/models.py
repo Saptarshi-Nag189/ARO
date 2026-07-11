@@ -16,6 +16,7 @@ Providers (selected via ARO_MODEL_PROVIDER):
 
 import json
 import os
+import re
 from typing import Any, List, Optional
 
 from langchain_core.language_models.chat_models import BaseChatModel
@@ -103,8 +104,48 @@ def get_plain_chat_model(agent_name: str, config: AROConfig) -> BaseChatModel:
 # ─── Deterministic offline fake ──────────────────────────────────────────
 
 
-def _fake_payload(agent_name: str) -> Any:
-    """Schema-valid canned output per agent, for offline runs and CI."""
+def _fake_payload(agent_name: str, prompt: str = "") -> Any:
+    """Schema-valid canned output per agent, for offline runs and CI.
+
+    Prompt-aware where the guardrails demand it: claim extraction reuses
+    the real registered source IDs listed in the prompt, and synthesis
+    references real claim IDs — the persistence guardrails DROP anything
+    with unknown IDs (never reattribute), so a naive fake would produce
+    empty runs.
+    """
+    if agent_name == "claim_extraction":
+        source_ids = re.findall(r"^\s{2}(src_[A-Za-z0-9_]+): ", prompt, flags=re.M)
+        src_a = source_ids[0] if source_ids else "src_1"
+        src_b = source_ids[1] if len(source_ids) > 1 else src_a
+        return {
+            "claims": [
+                {"subject": "The field", "relation": "advanced_in", "object": "2024",
+                 "source_id": src_a, "confidence_estimate": 0.8,
+                 "credibility_weight": 0.85},
+                {"subject": "Evaluation methods", "relation": "remain",
+                 "object": "an open challenge",
+                 "source_id": src_b, "confidence_estimate": 0.7,
+                 "credibility_weight": 0.75},
+            ],
+            "extraction_notes": None,
+        }
+
+    if agent_name == "synthesis":
+        claim_ids = re.findall(r"\[(claim_[a-f0-9]+)\]", prompt)
+        supporting = claim_ids[:1] if claim_ids else ["c1"]
+        return {
+            "hypotheses": [
+                {"statement": "Recent advances outpace evaluation methodology.",
+                 "supporting_claim_ids": supporting, "opposing_claim_ids": [],
+                 "confidence": 0.6, "status": "proposed"}
+            ],
+            "merged_claims": [],
+            "narrative_summary": "Evidence suggests rapid progress with lagging evaluation.",
+            "relationships": [],
+            "resolved_contradictions": [],
+            "resolved_gap_ids": [],
+        }
+
     payloads = {
         "planner": {
             "research_objective_summary": "Fake restated objective.",
@@ -131,17 +172,6 @@ def _fake_payload(agent_name: str) -> Any:
             "sources_consulted": 2,
             "search_queries_used": ["state of the art", "open challenges"],
         },
-        "claim_extraction": {
-            "claims": [
-                {"subject": "The field", "relation": "advanced_in", "object": "2024",
-                 "source_id": "src_1", "confidence_estimate": 0.8,
-                 "credibility_weight": 0.85},
-                {"subject": "Evaluation methods", "relation": "remain", "object": "an open challenge",
-                 "source_id": "src_2", "confidence_estimate": 0.7,
-                 "credibility_weight": 0.75},
-            ],
-            "extraction_notes": None,
-        },
         "skeptic": {
             "contradictions": [],
             "credibility_challenges": [],
@@ -150,16 +180,6 @@ def _fake_payload(agent_name: str) -> Any:
                  "severity": 0.4}
             ],
             "overall_assessment": "Claims are plausible but thinly sourced.",
-        },
-        "synthesis": {
-            "hypotheses": [
-                {"statement": "Recent advances outpace evaluation methodology.",
-                 "supporting_claim_ids": ["c1"], "opposing_claim_ids": [],
-                 "confidence": 0.6, "status": "proposed"}
-            ],
-            "merged_claims": [],
-            "narrative_summary": "Evidence suggests rapid progress with lagging evaluation.",
-            "relationships": [],
         },
         "innovation": {
             "proposals": [
@@ -216,7 +236,11 @@ class FakeAgentModel(BaseChatModel):
         run_manager: Any = None,
         **kwargs: Any,
     ) -> ChatResult:
-        payload = _fake_payload(self.agent_name)
+        prompt = ""
+        for message in messages:
+            if isinstance(message.content, str):
+                prompt += message.content + "\n"
+        payload = _fake_payload(self.agent_name, prompt)
         if payload is None:
             text = (
                 "Based on the available evidence, the fake conclusion is that "

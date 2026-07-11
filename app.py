@@ -47,6 +47,8 @@ _ARO_API_KEY = os.getenv("ARO_API_KEY", "")
 MAX_CONCURRENT_SESSIONS = int(os.getenv("ARO_MAX_CONCURRENT", "3"))
 MAX_ITERATIONS_CEILING = 50
 MIN_ITERATIONS = 1
+ALLOWED_MODES = {"autonomous", "interactive", "innovation", "fast"}
+ALLOWED_RUNTIME_MODES = {"production", "audit"}
 
 
 @app.before_request
@@ -59,7 +61,9 @@ def require_api_key():
         return
     if not _ARO_API_KEY:
         return  # key not configured, skip enforcement (dev mode)
-    provided = request.headers.get("X-API-Key", "")
+    # EventSource cannot send custom headers, so the SSE client passes the
+    # key as a query parameter instead.
+    provided = request.headers.get("X-API-Key", "") or request.args.get("api_key", "")
     if not hmac.compare_digest(provided, _ARO_API_KEY):
         return jsonify({"error": "unauthorized"}), 401
 
@@ -120,6 +124,8 @@ def _run_research(session_id: str, objective: str, mode: str,
         """Graph nodes push progress events straight into the SSE queue."""
         queue.put({"type": event_type, **(data or {})})
 
+    memory = None
+    session_logger = None
     try:
         memory = MemoryService(
             db_path=str(base_dir / config.db_path),
@@ -167,7 +173,10 @@ def _run_research(session_id: str, objective: str, mode: str,
                 invoke_config,
             )
 
+        # completed_at is required for _evict_old_sessions — without it,
+        # successful sessions are never evicted (memory leak).
         _session_status[session_id]["status"] = "complete"
+        _session_status[session_id]["completed_at"] = time.time()
 
     except Exception as exc:
         logger.exception("Research session %s failed: %s", session_id, exc)
@@ -177,10 +186,16 @@ def _run_research(session_id: str, objective: str, mode: str,
             "completed_at": time.time(),
         }
     finally:
-        try:
-            memory.close()
-        except Exception:
-            pass
+        if memory is not None:
+            try:
+                memory.close()
+            except Exception:
+                pass
+        if session_logger is not None:
+            try:
+                session_logger.close()
+            except Exception:
+                pass
         queue.put({"type": "done"})
 
 
@@ -204,7 +219,15 @@ def start_research():
         return jsonify({"error": "objective is required"}), 400
 
     mode = data.get("mode", "autonomous")
+    if mode not in ALLOWED_MODES:
+        return jsonify({
+            "error": f"invalid mode; must be one of {sorted(ALLOWED_MODES)}"
+        }), 400
     runtime_mode = data.get("runtime_mode", "production")
+    if runtime_mode not in ALLOWED_RUNTIME_MODES:
+        return jsonify({
+            "error": f"invalid runtime_mode; must be one of {sorted(ALLOWED_RUNTIME_MODES)}"
+        }), 400
 
     # SEC-011: Clamp max_iterations to safe range
     max_iterations = data.get("max_iterations", 10)

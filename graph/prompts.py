@@ -90,7 +90,13 @@ def build_skeptic_prompt(claims, hypotheses) -> str:
     )
 
 
-def build_synthesis_prompt(claims, existing_hypotheses) -> str:
+def build_synthesis_prompt(
+    claims, existing_hypotheses,
+    open_contradictions=None, unresolved_gaps=None,
+) -> str:
+    # Note: synthesis runs in parallel with the skeptic on the same
+    # snapshot, so contradictions/gaps shown here are from PREVIOUS
+    # iterations — resolution naturally lags detection by one iteration.
     max_claims = 60
     max_existing_hypotheses = 30
     selected_claims = sorted(
@@ -113,6 +119,15 @@ def build_synthesis_prompt(claims, existing_hypotheses) -> str:
         for h in selected_hypotheses
     ) if selected_hypotheses else "  (No existing hypotheses)"
 
+    contradictions_text = "\n".join(
+        f"  - {a} vs {b}"
+        for a, b in sorted(tuple(sorted(p)) for p in (open_contradictions or set()))
+    ) or "  (No open contradictions)"
+    gaps_text = "\n".join(
+        f"  [{g.id}] {g.description} (severity: {g.severity})"
+        for g in (unresolved_gaps or [])[:20]
+    ) or "  (No unresolved knowledge gaps)"
+
     return (
         f"Synthesize the following claims into coherent hypotheses.\n\n"
         f"Context limits:\n"
@@ -121,7 +136,17 @@ def build_synthesis_prompt(claims, existing_hypotheses) -> str:
         f"of {len(existing_hypotheses)}\n\n"
         f"Current claims:\n{claims_text}\n\n"
         f"Existing hypotheses:\n{existing}\n\n"
+        f"Open contradictions (claim ID pairs flagged by the skeptic):\n"
+        f"{contradictions_text}\n\n"
+        f"Unresolved knowledge gaps:\n{gaps_text}\n\n"
         "Form new hypotheses or update existing ones. Reference claim IDs.\n\n"
+        "Resolution duties:\n"
+        "- If the evidence now settles an open contradiction listed above,\n"
+        "  add it to resolved_contradictions with claim_id_a, claim_id_b,\n"
+        "  and a one-sentence resolution. ONLY use pairs from the list.\n"
+        "- If the evidence now adequately addresses an unresolved gap\n"
+        "  listed above, add its ID to resolved_gap_ids. ONLY use IDs\n"
+        "  from the list. Do NOT mark anything resolved speculatively.\n\n"
         "Strict output constraints:\n"
         "- Return at most 8 hypotheses.\n"
         "- Return at most 20 merged_claims.\n"

@@ -14,6 +14,7 @@ os.environ["ARO_FAKE_MODEL"] = "1"
 os.environ.pop("ARO_CHECKPOINT_URI", None)
 os.environ.pop("ARO_MODEL_PROVIDER", None)
 
+# Make the repo root importable regardless of where pytest is invoked from
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 import sqlite3
@@ -52,6 +53,19 @@ def config():
     return cfg
 
 
+@pytest.fixture
+def memory(tmp_path):
+    """A MemoryService on a throwaway DB, vector store disabled (no chromadb)."""
+    svc = MemoryService(
+        db_path=str(tmp_path / "test.db"),
+        session_id="session_testtesttest",
+        enable_cross_session_memory=False,
+    )
+    svc.create_session("test objective", "autonomous")
+    yield svc
+    svc.close()
+
+
 @pytest.fixture()
 def services(tmp_path, config):
     memory = MemoryService(
@@ -75,6 +89,7 @@ def services(tmp_path, config):
     svc.events = collector  # test-only handle
     yield svc
     memory.close()
+    session_logger.close()
 
 
 @pytest.fixture()

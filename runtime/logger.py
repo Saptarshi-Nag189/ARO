@@ -135,13 +135,27 @@ class SessionLogger:
     def _setup_python_logger(self) -> None:
         """Configure Python's logging for the session."""
         log_file = os.path.join(self.session_dir, "session.log")
-        handler = logging.FileHandler(log_file)
-        handler.setFormatter(logging.Formatter(
+        self._file_handler = logging.FileHandler(log_file)
+        self._file_handler.setFormatter(logging.Formatter(
             "%(asctime)s [%(name)s] %(levelname)s: %(message)s"
         ))
         root_logger = logging.getLogger("aro")
-        root_logger.addHandler(handler)
+        root_logger.addHandler(self._file_handler)
         root_logger.setLevel(logging.DEBUG)
+
+    def close(self) -> None:
+        """
+        Detach and close this session's file handler.
+
+        Without this, every session adds another handler to the shared 'aro'
+        logger: later sessions' log lines get appended to all earlier session
+        files and file descriptors leak for the life of the process.
+        """
+        handler = getattr(self, "_file_handler", None)
+        if handler is not None:
+            logging.getLogger("aro").removeHandler(handler)
+            handler.close()
+            self._file_handler = None
 
     def create_iteration_log(self, iteration: int) -> IterationLog:
         """Create a new iteration log."""
