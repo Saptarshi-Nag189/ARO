@@ -209,7 +209,8 @@ class FastNodes:
         ]
         return FinalReport(
             session_id=self.memory.session_id,
-            research_objective=fast.research_objective,
+            # Use the user's actual objective, never the model's echo of it
+            research_objective=state["objective"],
             executive_summary=fast.executive_summary,
             conclusion=fast.conclusion,
             mode="fast",

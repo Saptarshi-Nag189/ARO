@@ -28,6 +28,19 @@ services:
       retries: 3
       start_period: 15s
 
+  # Remote MCP server — plug ARO into Claude Desktop / Claude Code / Cursor:
+  #   claude mcp add --transport http aro http://localhost:8001/mcp
+  aro-mcp:
+    build: .
+    command: python -m mcp_server.server --http --host 0.0.0.0 --port 8001
+    ports:
+      - "8001:8001"
+    env_file: .env
+    volumes:
+      - ./logs:/app/logs
+      - vector_data:/app/vector_store
+    restart: unless-stopped
+
 volumes:
   vector_data:
     driver: local
