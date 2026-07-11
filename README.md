@@ -1,16 +1,53 @@
 # ARO — Autonomous Research Operator
 
+[![CI](https://github.com/Saptarshi-Nag189/ARO/actions/workflows/ci.yml/badge.svg)](https://github.com/Saptarshi-Nag189/ARO/actions/workflows/ci.yml)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
 [![Python 3.10+](https://img.shields.io/badge/python-3.10+-blue.svg)](https://www.python.org/downloads/)
+[![LangGraph](https://img.shields.io/badge/engine-LangGraph-1C3C3C.svg)](https://langchain-ai.github.io/langgraph/)
+[![MCP](https://img.shields.io/badge/MCP-server-7C3AED.svg)](#-mcp-server--plug-aro-into-claude--cursor)
 [![Docker Ready](https://img.shields.io/badge/docker-ready-blue.svg)](Dockerfile)
 
-A multi-agent AI research engine that autonomously plans research strategies, searches the web across 5 free engines, extracts verifiable claims, debates contradictions, synthesizes hypotheses, and generates innovation proposals — with mathematical confidence scoring.
+A multi-agent AI research engine that autonomously plans research strategies, searches the web across 5 free engines, extracts verifiable claims, debates contradictions, synthesizes hypotheses, and generates innovation proposals — with mathematical confidence scoring on every iteration.
+
+**v3** rebuilds the execution core on **LangGraph**: every run is a checkpointed, resumable graph execution with real human-in-the-loop interrupts, full **LangSmith** observability, an **eval-gated CI/CD pipeline** that blocks merges when answer quality regresses, an **MCP server** that plugs ARO into Claude or Cursor as a tool, and a pluggable one-command **AWS deployment**.
 
 ---
 
-## Quick Start
+## Table of contents
 
-### 1. Clone & Install
+- [Why ARO is interesting](#why-aro-is-interesting)
+- [Quick start](#quick-start)
+- [How it works — the research graph](#how-it-works--the-research-graph)
+- [Durable execution & human-in-the-loop](#durable-execution--human-in-the-loop)
+- [LLMOps: tracing, evals, and the quality gate](#llmops-tracing-evals-and-the-quality-gate)
+- [MCP server — plug ARO into Claude / Cursor](#-mcp-server--plug-aro-into-claude--cursor)
+- [AWS deployment (pluggable)](#aws-deployment-pluggable)
+- [Modes, CLI, configuration](#modes-cli-configuration)
+- [Testing](#testing)
+- [Project structure](#project-structure)
+- [Guardrails](#guardrails)
+
+---
+
+## Why ARO is interesting
+
+Most "research agent" demos are a prompt in a loop. ARO is an **engineered system** with opinions:
+
+1. **Deterministic control, probabilistic workers.** LLM agents produce claims, critiques, and hypotheses — but loop control, termination, and scoring are *mathematical*, not vibes. Epistemic risk, hypothesis confidence, and novelty are computed each iteration from claim/source statistics (see [`docs/mathematical_models.md`](docs/mathematical_models.md)), and the run stops when the numbers say so: risk convergence, novelty plateau, budget cap, or iteration ceiling.
+
+2. **Adversarial by construction.** A Skeptic agent runs *in parallel* with the Synthesis agent every iteration, hunting contradictions, challenging source credibility, and filing knowledge gaps. Contradictions are mapped into opposing evidence on affected hypotheses — confidence goes *down* when sources disagree.
+
+3. **Every run is durable.** The graph checkpoints its full typed state after every node (SQLite locally, Postgres in production). Kill the process mid-run and resume it from the exact node boundary with `--resume`. Interactive mode is a real `interrupt()` — the graph parks *in the checkpoint store* until a human says continue, stop, or "focus on X instead".
+
+4. **Quality is regression-tested.** Prompts and graph topology are covered by a LangSmith eval suite (LLM-as-judge + programmatic evaluators built from ARO's own epistemic math). A PR that makes answers worse **fails CI** before it can merge.
+
+5. **It's a tool, not just an app.** The MCP server exposes `deep_research` / `fast_research` to any MCP client — your ARO instance becomes a research tool *inside* Claude Desktop, Claude Code, or Cursor.
+
+---
+
+## Quick start
+
+### 1. Clone & install
 
 ```bash
 git clone https://github.com/Saptarshi-Nag189/ARO.git
@@ -21,259 +58,311 @@ source venv/bin/activate        # Windows: venv\Scripts\activate
 pip install -r requirements.txt
 ```
 
-### 2. Configure API Keys
+### 2. Try it with zero setup (offline demo mode)
+
+No API keys, no network — the deterministic fake model exercises the entire graph:
+
+```bash
+ARO_FAKE_MODEL=1 python main.py -o "Anything you like" -m autonomous
+```
+
+### 3. Configure real models
 
 ```bash
 cp .env.example .env
 ```
 
-Edit `.env` with your [OpenRouter API keys](https://openrouter.ai/keys). ARO uses 3 free models — you can use a single key for all or separate keys per model:
+Edit `.env` with your [OpenRouter API keys](https://openrouter.ai/keys) — ARO's default agents run on **free** OpenRouter models:
 
-| Variable | Model | Used By |
+| Variable | Model | Used by |
 |---|---|---|
-| `OPENROUTER_API_KEY` | Trinity Large Preview | research, innovation, orchestrator |
+| `OPENROUTER_API_KEY` | Trinity Large Preview | research, innovation |
 | `OPENROUTER_API_KEY_STEP` | Step 3.5 Flash | planner, claim extraction |
 | `OPENROUTER_API_KEY_GPT_OSS` | GPT-OSS-120B | skeptic, synthesis, reflection |
 
-> **Tip:** All three models are free on OpenRouter. If you only have one key, set `OPENROUTER_API_KEY` and leave the others blank — ARO will use the default key for all agents.
+> One key is enough — the others fall back to `OPENROUTER_API_KEY`. Set `LANGSMITH_API_KEY` + `LANGSMITH_TRACING=true` too and every agent call, retry, and token count appears in [LangSmith](https://smith.langchain.com) automatically.
 
-### 3. Run
-
-**CLI (fastest way to test):**
+### 4. Run
 
 ```bash
-# Standard research
+# Standard research (2–5 min, iterative)
 python main.py -o "What are the latest advances in quantum error correction?" -m autonomous
 
-# Fast mode (~30 seconds instead of 2-5 minutes)
+# Fast mode (~30 s, single pass, speculative search)
 python main.py -o "Impact of LLMs on software engineering" -m fast
 
-# Innovation mode (prior-art scan + novelty scoring)
+# Innovation mode (prior-art scan + novelty-scored proposals)
 python main.py -o "Novel approaches to protein folding prediction" -m innovation -n 5
 
-# Verbose logging
-python main.py -o "Your question here" -v
+# Interactive mode (the graph pauses for YOU after each iteration)
+python main.py -o "Your question" -m interactive
 ```
 
-**Web Dashboard:**
+**Web dashboard** (glassmorphism React UI with live agent map):
 
 ```bash
-# Build the UI (first time only)
 cd ui && npm install && npm run build && cd ..
-
-# Start the server
-python app.py
-# Open http://localhost:5000
+python app.py            # → http://localhost:5000
 ```
 
-**Docker (recommended for deployment):**
+**Docker** (web app + MCP server):
 
 ```bash
 docker compose up --build
-# Open http://localhost:5000
+# Web UI → http://localhost:5000   |   MCP → http://localhost:8001/mcp
 ```
 
 ---
 
-## How It Works
+## How it works — the research graph
 
-ARO runs an iterative research loop where **7 specialized AI agents** collaborate, each powered by the model best suited to its task:
-
-```
-Plan → Web Search → Research → Extract Claims → Skeptic → Synthesize → [Innovate] → Reflect → Loop
-```
-
-| Agent | Role | Model |
-|---|---|---|
-| **Planner** | Breaks question into sub-questions with search strategies | Step 3.5 Flash |
-| **Research** | Analyzes real web search results, structures findings | Trinity Large Preview |
-| **Claim Extraction** | Extracts atomic, verifiable claims with source provenance | Step 3.5 Flash |
-| **Skeptic** | Detects contradictions, challenges credibility, flags gaps | GPT-OSS-120B |
-| **Synthesis** | Forms hypotheses from validated claims, resolves conflicts | GPT-OSS-120B |
-| **Innovation** | Generates patent-grade differentiation proposals | Trinity Large Preview |
-| **Reflection** | Meta-analyzes progress, adjusts strategy | GPT-OSS-120B |
-
-### Key Capabilities
-
-- **Real web search** — 5 free engines (DuckDuckGo, Semantic Scholar, arXiv, OpenAlex, Wikipedia), no API keys needed
-- **Source provenance** — every claim tagged as `web-sourced` or `training-knowledge`
-- **Evidence hierarchy** — peer-reviewed > preprints > Wikipedia > web > training knowledge
-- **Cross-session memory** — ChromaDB vector store remembers findings across research sessions
-- **Mathematical scoring** — confidence, epistemic risk, and novelty computed per iteration
-- **4 research modes** — autonomous, interactive, innovation, and fast
-- **Parallel pipeline** — Skeptic ‖ Synthesis and Innovation ‖ Reflection run concurrently (~50s saved over 5 iterations)
-- **Response streaming** — token-by-token streaming via SSE
-- **Modern React dashboard** — glassmorphism UI with live feed, hypothesis deep-dive, agent network map
-
-### Pipeline Comparison
+The engine is a compiled **LangGraph `StateGraph`** over a single typed state (`graph/state.py`). Seven specialized agents — each just a system prompt + a strict Pydantic output schema (`agents/`) — run as nodes, with genuine parallel fan-outs where the pipeline allows it:
 
 ```mermaid
 flowchart TB
-    subgraph Standard["Standard Mode (2-5 min)"]
-        direction TB
-        S1[Planner] --> S2[Web Search]
-        S2 --> S3[Research Agent]
-        S3 --> S4[Claim Extraction]
-        S4 --> S5[Skeptic + Synthesis]
-        S5 --> S6[Innovation?]
-        S6 --> S7[Reflection]
-        S7 -->|Loop 3-10x| S1
-    end
-
-    subgraph Fast["Fast Mode (15-30 sec)"]
-        direction TB
-        F1[Planner + Seed Search] -->|parallel| F2[Targeted Search]
-        F2 --> F3[Single-Pass Synthesis]
-        F3 --> F4[Report]
-    end
+    START((START)) --> plan[plan<br/><i>Step 3.5 Flash</i>]
+    plan --> web[web_search<br/><i>5 engines, parallel</i>]
+    web --> research[research<br/><i>Trinity Large</i>]
+    research --> extract[extract_claims<br/><i>Step 3.5 Flash</i>]
+    extract --> skeptic[skeptic<br/><i>GPT-OSS-120B</i>]
+    extract --> synthesis[synthesis<br/><i>GPT-OSS-120B</i>]
+    skeptic --> integrate[integrate<br/><i>single writer</i>]
+    synthesis --> integrate
+    integrate --> metrics[compute_metrics<br/><i>risk · confidence · novelty</i>]
+    metrics -->|innovation mode| innovation[innovation<br/><i>Trinity Large</i>]
+    metrics --> reflection[reflection<br/><i>GPT-OSS-120B</i>]
+    innovation --> record
+    reflection --> record[record<br/><i>log · terminate?</i>]
+    record -->|stop| finalize[finalize<br/><i>report + conclusion</i>]
+    record -->|interactive| gate{{"human_gate<br/>interrupt()"}}
+    record -->|replan| plan
+    record -->|next iteration| web
+    gate -->|continue / redirect| web
+    gate -->|stop| finalize
+    finalize --> END((END))
 ```
 
-### Three-Tier Memory Architecture
+Design rules that keep it correct under concurrency:
+
+- **Parallel branches are pure.** `skeptic ‖ synthesis` and `innovation ‖ reflection` operate on snapshots taken by the preceding node — they never touch the database concurrently. All writes happen in single-writer nodes (`extract_claims`, `integrate`, `record`, `finalize`).
+- **Termination is a pure function of checkpointed state.** Risk/novelty/claim histories live in the state; the checker replays them, so a resumed run makes the same decision it would have made originally.
+- **Token accounting must reconcile exactly.** `finalize` raises if per-iteration token sums drift from the run total — no silent cost leaks.
+
+### Per-agent model routing
+
+Each agent gets the model suited to its job (configured in `config.py`, overridable per-run with `--model`):
+
+| Agent | Role | Default model |
+|---|---|---|
+| **Planner** | Decomposes the objective into prioritized sub-questions | Step 3.5 Flash |
+| **Research** | Grounds findings in real web search results | Trinity Large Preview |
+| **Claim Extraction** | Atomic, source-attributed claims | Step 3.5 Flash |
+| **Skeptic** | Contradictions, credibility challenges, knowledge gaps | GPT-OSS-120B |
+| **Synthesis** | Hypotheses with supporting/opposing claim links | GPT-OSS-120B |
+| **Innovation** | Prior-art-scanned, novelty-scored proposals | Trinity Large Preview |
+| **Reflection** | Meta-analysis + strategy adjustments (advisory only) | GPT-OSS-120B |
+
+Set `ARO_MODEL_PROVIDER=bedrock` to route every agent through **AWS Bedrock** instead (`pip install langchain-aws`).
+
+### Three-tier memory
+
+| Tier | Store | Contents |
+|---|---|---|
+| Structured | SQLite (WAL) | sessions, claims, hypotheses, sources, knowledge gaps — guardrail-enforced facade (`memory/`) |
+| Semantic | ChromaDB | cross-session claim/hypothesis retrieval |
+| Durable execution | SQLite / Postgres | **full graph state after every node** (LangGraph checkpointer) |
+
+---
+
+## Durable execution & human-in-the-loop
+
+Every invocation carries a `thread_id` (the session id). The checkpointer persists the complete typed state at every node boundary, which buys three things:
+
+**1. Crash-safe resume.** Kill the process anywhere — mid-iteration, mid-LLM-call — and continue from the last completed node:
+
+```bash
+python main.py -o "same objective" -m autonomous -s session_ab12cd34ef56 --resume
+```
+
+**2. Real human-in-the-loop.** Interactive mode parks the graph in an `interrupt()` after each iteration. The CLI shows the iteration's confidence/risk/novelty and asks:
+
+```
+Iteration 2 complete.
+  Confidence: 0.791 | Risk: 0.168 | Novelty: 0.500
+Your call [continue/stop/<redirect note>]:
+```
+
+Type `continue`, `stop` (report now), or *anything else* — e.g. `focus on the security implications` — and the graph re-plans around your directive. The pause lives in the checkpoint store, so you can answer tomorrow, or from a different process.
+
+**3. Time-travel debugging.** `graph.get_state_history()` exposes every checkpoint — inspect exactly what the skeptic saw at iteration 3, or fork a run from any point.
+
+Backend selection is one env var:
+
+```bash
+# local default: aro_checkpoints.db (SQLite)
+ARO_CHECKPOINT_URI=postgresql://user:pass@host:5432/aro   # production (RDS)
+```
+
+---
+
+## LLMOps: tracing, evals, and the quality gate
+
+The part that makes this production software rather than a demo:
 
 ```mermaid
 flowchart LR
-    subgraph Tier1["Tier 1: Structured (SQLite)"]
-        direction TB
-        T1A[Sessions]
-        T1B[Claims]
-        T1C[Hypotheses]
-        T1D[Sources]
-        T1E[Knowledge Gaps]
+    subgraph PR["Every PR"]
+        CI["ci.yml<br/>ruff + 41 offline tests<br/>(fake model, no keys)"]
     end
-
-    subgraph Tier2["Tier 2: Semantic (ChromaDB)"]
-        direction TB
-        T2A["claims collection"]
-        T2B["hypotheses collection"]
+    subgraph Gate["PRs touching graph/ agents/ schemas/ evals/"]
+        EG["eval-gate.yml<br/>LangSmith eval suite vs<br/>evals/baseline.json"]
     end
-
-    subgraph Tier3["Tier 3: Transient (In-Process Cache)"]
-        direction TB
-        T3A["Search result cache (TTL: 1h)"]
-        T3B["Embedding cache"]
+    subgraph Main["Merge to main"]
+        CD["deploy.yml<br/>Docker → ECR → ECS roll<br/>(dormant until AWS secrets exist)"]
     end
+    CI --> EG -->|"quality holds"| Main
+    EG -.->|"score drops > 0.05"| BLOCKED["❌ merge blocked"]
+```
 
-    Orchestrator -->|"CRUD (session-scoped)"| Tier1
-    Orchestrator -->|"Semantic search (cross-session)"| Tier2
-    WebSearch -->|"Cache hit?"| Tier3
-    Tier1 -->|"On write, also embed"| Tier2
+- **Tracing:** with `LANGSMITH_TRACING=true`, every node, agent call, structured-output retry, and token count is traced in LangSmith — per-run, per-agent, per-prompt.
+- **The eval suite** (`evals/`): a 15-question research dataset with reference key points, scored by
+  - *LLM-as-judge evaluators* — `faithfulness` (does the answer contradict the references?) and `coverage` (how many key points does it address?), and
+  - *programmatic evaluators* built from ARO's own epistemic math — `risk_calibration`, `confidence_honesty` (high confidence + high risk = miscalibration), `report_completeness`. Zero tokens, zero flakes.
+- **The gate:** `python -m evals.run_evals` runs the pipeline over the dataset, aggregates scores, and **exits non-zero if any metric drops more than 0.05 below the committed baseline** (`evals/baseline.json`). In CI this means *a prompt tweak that quietly degrades answer quality cannot merge*. Deliberate improvements re-set the baseline with `--update-baseline`.
+
+```bash
+python -m evals.run_evals --limit 5        # smoke run
+python -m evals.run_evals                  # full run + regression gate
+python -m evals.run_evals --update-baseline
 ```
 
 ---
 
-## Modes
+## 🔌 MCP server — plug ARO into Claude / Cursor
+
+ARO ships an [MCP](https://modelcontextprotocol.io) server (`mcp_server/`), so any MCP client can call the research engine as a tool.
+
+**Local (stdio):**
+
+```bash
+claude mcp add aro -- python -m mcp_server.server
+```
+
+**Remote (streamable HTTP — via Docker or the AWS stack):**
+
+```bash
+claude mcp add --transport http aro http://<host>:8001/mcp
+```
+
+Then just ask Claude: *"Use the aro tools to deep-research the state of solid-state batteries."*
+
+| Tool | What it does |
+|---|---|
+| `fast_research(question)` | ~30 s single-pass, web-grounded answer |
+| `deep_research(question, mode, max_iterations)` | full iterative pipeline with confidence/risk scores; `mode="innovation"` adds proposals |
+| `list_research_sessions()` | past sessions + final scores |
+| `get_research_report(session_id)` | full structured report (hypotheses, claims, gaps, metrics) |
+
+Past reports are also exposed as MCP **resources** at `aro://reports/{session_id}`.
+
+---
+
+## AWS deployment (pluggable)
+
+The cloud layer is **opt-in** — nothing in the local workflow depends on it. When you want a public URL:
+
+```bash
+cd infra/terraform && terraform apply     # VPC, ALB, 2× Fargate services,
+                                          # RDS Postgres (checkpoints), S3,
+                                          # ECR, Secrets Manager, CloudWatch
+```
+
+- ~**$25–40/month** while up (cost-trimmed: no NAT gateway, free-tier RDS), and `terraform destroy` returns to $0.
+- `deploy.yml` turns into a full CD pipeline the moment `AWS_ACCESS_KEY_ID`/`AWS_SECRET_ACCESS_KEY` secrets are added to the repo — until then it self-skips.
+- Durable checkpoints move to RDS via one secret (`ARO_CHECKPOINT_URI`), so production runs survive deploys and crashes.
+
+Full walkthrough, cost table, and teardown: [`docs/deployment_aws.md`](docs/deployment_aws.md).
+
+---
+
+## Modes, CLI, configuration
 
 | Mode | Description | Speed |
 |---|---|---|
-| `autonomous` | Fully self-directed iterative research loop | 2-5 min |
-| `fast` | Single-pass speculative research (planner + search in parallel) | 15-30 sec |
-| `interactive` | Human override at each iteration | Variable |
-| `innovation` | Prior-art scan, novelty scoring, patent-grade proposals | 3-7 min |
-
----
-
-## CLI Options
+| `autonomous` | Fully self-directed iterative research loop | 2–5 min |
+| `fast` | Single-pass speculative research (seed search ‖ planning) | 15–30 s |
+| `interactive` | Real `interrupt()` after each iteration — continue / stop / redirect | you decide |
+| `innovation` | Prior-art scan, novelty scoring, patent-grade proposals | 3–7 min |
 
 ```
 --objective, -o    Research question (required)
---mode, -m         autonomous / interactive / innovation / fast (default: autonomous)
+--mode, -m         autonomous / interactive / innovation / fast
 --max-iterations   Max research iterations (default: 10)
---session-id       Custom session ID
+--session-id, -s   Session ID (doubles as the checkpoint thread id)
+--resume           Resume an interrupted run from its checkpoint
+--model, -M        Override every agent's model
+--budget, -b       Budget cap in USD
 --verbose, -v      Debug logging
 ```
 
+| Env var | Purpose |
+|---|---|
+| `OPENROUTER_API_KEY` (+`_STEP`, `_GPT_OSS`) | model access (free models) |
+| `ARO_FAKE_MODEL=1` | offline deterministic mode (demos, CI) |
+| `ARO_MODEL_PROVIDER=bedrock` | route agents through AWS Bedrock |
+| `ARO_CHECKPOINT_URI` | Postgres checkpointer (default: SQLite) |
+| `LANGSMITH_TRACING` / `LANGSMITH_API_KEY` | full observability |
+| `ARO_API_KEY` | protect the web API |
+| `ARO_HOST` / `ARO_PORT` / `ARO_MAX_CONCURRENT` | server tuning |
+
 ---
 
-## Project Structure
+## Testing
+
+```bash
+ARO_FAKE_MODEL=1 pytest tests/ -v
+```
+
+**41 tests, fully offline** — the deterministic fake model drives the *entire* graph, so CI needs no keys and never flakes:
+
+- end-to-end autonomous + innovation runs, report integrity
+- parallel fan-out coverage (skeptic ‖ synthesis, innovation ‖ reflection)
+- exact token-accounting reconciliation
+- interrupt → continue / stop / redirect flows; crash-resume with a fresh graph instance; checkpoint state history
+- structured-output correction retries; evaluation math; MCP tools via an in-process client
+
+---
+
+## Project structure
 
 ```
 aro/
-├── agents/                    # AI Agent implementations
-│   ├── orchestrator.py           # Pipeline controller (parallel Skeptic ‖ Synthesis)
-│   ├── fast_orchestrator.py      # Single-pass fast mode pipeline
-│   ├── prompt_builder.py         # Centralized prompt construction
-│   ├── data_processor.py         # Source/claim/hypothesis persistence
-│   ├── planner_agent.py          # Research planning
-│   ├── research_agent.py         # Web search analysis
-│   ├── claim_extraction_agent.py # Atomic claim extraction
-│   ├── skeptic_agent.py          # Contradiction detection
-│   ├── synthesis_agent.py        # Hypothesis formation
-│   ├── innovation_agent.py       # Patent-grade proposals
-│   └── reflection_agent.py       # Meta-analysis
-├── memory/                    # Persistent memory
-│   ├── memory_service.py         # Unified facade (guardrails + vector indexing)
-│   ├── vector_store.py           # ChromaDB cross-session semantic memory
-│   ├── db.py                     # SQLite schema + migration
-│   ├── claim_store.py            # Claims CRUD
-│   ├── hypothesis_graph.py       # NetworkX hypothesis graph
-│   └── source_registry.py        # Source management
-├── runtime/                   # Runtime services
-│   ├── model_gateway.py          # OpenRouter API (sync + async + streaming)
-│   ├── cache.py                  # TTL cache (search, embeddings, LLM responses)
-│   ├── event_bus.py              # In-process event system for SSE
-│   └── logger.py                 # Structured JSON logging
-├── evaluation/                # Mathematical scoring
-│   ├── confidence.py             # HypothesisConfidence
-│   ├── risk.py                   # EpistemicRisk
-│   ├── novelty.py                # NoveltyScore
-│   ├── termination.py            # Termination conditions
-│   └── metrics_engine.py         # Per-iteration metrics computation
-├── tools/                     # External integrations
-│   ├── web_search.py             # 5-engine parallel web search
-│   ├── prior_art_tool.py         # Prior art scanning
-│   └── search_tool.py            # Search abstraction
-├── schemas/                   # Pydantic models
-├── ui/                        # React + Vite dashboard
-├── docs/                      # Documentation
-├── app.py                     # Flask web server + /api/health
-├── main.py                    # CLI entry point
-├── config.py                  # Multi-model configuration
-├── Dockerfile                 # Multi-stage production build
-├── docker-compose.yml         # Local dev stack
-└── requirements.txt           # Python dependencies
+├── graph/                     # ★ LangGraph execution core (v3)
+│   ├── graph.py                  # StateGraph assembly (research + fast)
+│   ├── state.py                  # typed, checkpointable state + reducers
+│   ├── nodes.py                  # node implementations (single-writer discipline)
+│   ├── fast_nodes.py             # speculative single-pass pipeline
+│   ├── models.py                 # model factory: OpenRouter / Bedrock / offline fake
+│   ├── structured.py             # schema-validated invocation w/ correction retries
+│   ├── checkpoint.py             # SqliteSaver / PostgresSaver factory
+│   ├── prompts.py                # all agent prompts (eval-gated in CI)
+│   └── services.py               # non-serializable deps (memory, logger, emitter)
+├── agents/                    # Agent specs: system prompt + Pydantic schema
+├── evals/                     # ★ LangSmith dataset, evaluators, regression gate
+├── mcp_server/                # ★ MCP server (stdio + streamable HTTP)
+├── infra/terraform/           # ★ pluggable AWS stack (ALB, Fargate, RDS, S3, ECR)
+├── memory/                    # SQLite facade + ChromaDB cross-session memory
+├── evaluation/                # confidence / risk / novelty math, termination
+├── tools/                     # 5-engine web search, prior-art scan
+├── schemas/                   # strict Pydantic contracts for everything
+├── runtime/                   # cache, event bus, structured session logs
+├── tests/                     # 41 offline tests (fake model)
+├── ui/                        # React + Vite dashboard (live agent map)
+├── .github/workflows/         # ci.yml · eval-gate.yml · deploy.yml
+├── app.py                     # Flask web server (SSE streaming)
+├── main.py                    # CLI (incl. --resume, interactive HITL)
+└── docs/                      # architecture, math, migration story, AWS runbook
 ```
-
----
-
-## Deployment
-
-### Docker (Recommended)
-
-```bash
-# Build and run
-docker compose up --build
-
-# Or manually
-docker build -t aro .
-docker run -p 5000:5000 --env-file .env aro
-```
-
-The Docker image uses:
-- **Python 3.12 slim** + multi-stage build (~250MB)
-- **Gunicorn** with 4 gthread workers (300s timeout for long research sessions)
-- Built-in **health check** at `/api/health`
-- Persistent **vector store** volume for cross-session memory
-
-### Health Check
-
-```bash
-curl http://localhost:5000/api/health
-# {"status":"ok","version":"2.0.0","active_sessions":0,"max_sessions":3,"uptime_seconds":42.1}
-```
-
----
-
-## Environment Variables
-
-| Variable | Required | Description |
-|---|---|---|
-| `OPENROUTER_API_KEY` | ✅ | Default API key (Trinity Large Preview) |
-| `OPENROUTER_API_KEY_STEP` | Optional | API key for Step 3.5 Flash (falls back to default) |
-| `OPENROUTER_API_KEY_GPT_OSS` | Optional | API key for GPT-OSS-120B (falls back to default) |
-| `ARO_API_KEY` | Optional | Protect `/api/` endpoints (leave empty to disable auth) |
-| `ARO_HOST` | Optional | Server bind address (default: `127.0.0.1`) |
-| `ARO_PORT` | Optional | Server port (default: `5000`) |
-| `ARO_MAX_CONCURRENT` | Optional | Max concurrent research sessions (default: `3`) |
 
 ---
 
@@ -281,23 +370,24 @@ curl http://localhost:5000/api/health
 
 - ❌ No claim insertion without source attribution
 - ❌ No hypothesis without supporting claims
-- ❌ No innovation without prior-art scan
+- ❌ No innovation without a prior-art scan
+- ❌ No reasoning traces in structured memory or reports (hard guard, run-aborting)
+- ❌ No token-accounting drift (finalize reconciles or raises)
 - ✅ Source provenance tracked (web-sourced vs training-knowledge)
-- ✅ Cross-source contradictions detected and resolved
-- ✅ Evidence hierarchy enforced across all agents
-- ✅ Reasoning traces isolated — never leak into production output
+- ✅ Cross-source contradictions become opposing evidence on hypotheses
+- ✅ Single-source hypotheses capped at 0.85 confidence
+- ✅ Termination is deterministic — agents only ever *advise* stopping
 
 ---
 
 ## Documentation
 
+- [LangGraph Migration — the v2 → v3 story](docs/langgraph_migration.md)
+- [AWS Deployment Runbook](docs/deployment_aws.md)
 - [System Architecture](docs/system_architecture.md)
 - [Mathematical Models](docs/mathematical_models.md)
 - [Agent Contracts](docs/agent_contracts.md)
-- [Reasoning Mode](docs/reasoning_mode.md)
 - [Security Policy](SECURITY.md)
-
----
 
 ## License
 
