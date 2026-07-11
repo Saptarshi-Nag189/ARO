@@ -169,8 +169,13 @@ _TABLE_COLUMNS: Dict[str, List[str]] = {
 
 
 def get_connection(db_path: str = "aro_memory.db") -> sqlite3.Connection:
-    """Get a SQLite connection with WAL mode and foreign keys enabled."""
-    conn = sqlite3.connect(db_path)
+    """Get a SQLite connection with WAL mode and foreign keys enabled.
+
+    check_same_thread=False: LangGraph may execute nodes on worker
+    threads. All writes go through single-writer nodes (never two nodes
+    writing concurrently), and WAL mode handles concurrent readers.
+    """
+    conn = sqlite3.connect(db_path, check_same_thread=False)
     conn.row_factory = sqlite3.Row
     conn.execute("PRAGMA journal_mode=WAL")
     conn.execute("PRAGMA foreign_keys=ON")

@@ -56,3 +56,9 @@ ui/.vite/
 
 # Stitch HTML mockups (not part of the app)
 ui/stitch_*.html
+
+# Terraform (local state/providers — never commit)
+.terraform/
+*.tfstate
+*.tfstate.*
+*.tfvars

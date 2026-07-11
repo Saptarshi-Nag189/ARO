@@ -43,7 +43,8 @@ class ReflectionAgent(BaseAgent):
             "- advisory_reason"
         )
 
-        mode = getattr(self.gateway.config, "mode", "production")
+        from config import config as global_config
+        mode = getattr(global_config, "mode", "production")
         if mode == "audit":
             base_prompt += (
                 "\n\n[AUDIT MODE ACTIVE]\n"

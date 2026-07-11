@@ -3,7 +3,8 @@ ARO Web Server
 ==============
 Flask backend serving the ARO web UI.
 Provides API endpoints for running research sessions, streaming progress,
-and retrieving past session reports.
+and retrieving past session reports. Research runs on the LangGraph
+engine; graph nodes emit progress events straight into the SSE stream.
 """
 
 import hmac
@@ -25,10 +26,9 @@ from flask_cors import CORS
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
 from config import AROConfig
+from graph import GraphServices, build_fast_graph, build_research_graph, get_checkpointer
 from memory.memory_service import MemoryService
-from runtime.model_gateway import ModelGateway
 from runtime.logger import SessionLogger
-from agents.orchestrator import Orchestrator
 
 app = Flask(__name__, static_folder="ui/dist", static_url_path="")
 # SEC-008: Explicitly configure CORS to allow only known origins
@@ -82,7 +82,7 @@ def health_check():
     )
     return jsonify({
         "status": "ok",
-        "version": "2.0.0",
+        "version": "3.0.0",
         "active_sessions": active_sessions,
         "max_sessions": MAX_CONCURRENT_SESSIONS,
         "uptime_seconds": round(uptime, 1),
@@ -107,59 +107,9 @@ def add_security_headers(response):
     return response
 
 
-# ─── Patched logger that emits SSE events ────────────────────────────
-class SSESessionLogger(SessionLogger):
-    """Extended SessionLogger that pushes agent events to an SSE queue."""
-
-    def __init__(self, log_dir: str, session_id: str, mode: str, queue: Queue):
-        super().__init__(log_dir=log_dir, session_id=session_id, mode=mode)
-        self._queue = queue
-
-    def save_iteration_log(self, log):
-        filepath = super().save_iteration_log(log)
-        # Push iteration completion event
-        self._queue.put({
-            "type": "iteration_complete",
-            "iteration": log.iteration,
-            "metrics": log.metrics,
-        })
-        return filepath
-
-    def save_final_report(self, report):
-        filepath = super().save_final_report(report)
-        data = report.model_dump(mode="json") if hasattr(report, "model_dump") else report
-        self._queue.put({
-            "type": "complete",
-            "report": data,
-        })
-        return filepath
-
-
-# Monkey-patch Orchestrator._run_agent_logged to emit SSE events
-_original_run_agent_logged = Orchestrator._run_agent_logged
-
-def _patched_run_agent_logged(self, agent, prompt, iter_log, context=None):
-    queue = getattr(self, "_sse_queue", None)
-    if queue:
-        queue.put({
-            "type": "agent_start",
-            "agent": agent.name,
-            "iteration": getattr(self, "_current_iteration", 0),
-        })
-    result = _original_run_agent_logged(self, agent, prompt, iter_log, context)
-    if queue:
-        queue.put({
-            "type": "agent_done",
-            "agent": agent.name,
-        })
-    return result
-
-Orchestrator._run_agent_logged = _patched_run_agent_logged
-
-
 def _run_research(session_id: str, objective: str, mode: str,
                   max_iterations: int, runtime_mode: str):
-    """Background thread: run the orchestrator and stream progress."""
+    """Background thread: run the LangGraph engine and stream progress."""
     queue = _progress_queues[session_id]
     base_dir = Path(__file__).resolve().parent
     config = AROConfig()
@@ -170,6 +120,10 @@ def _run_research(session_id: str, objective: str, mode: str,
 
     logs_root = str(base_dir / config.log_dir)
 
+    def emit(event_type: str, data: dict) -> None:
+        """Graph nodes push progress events straight into the SSE queue."""
+        queue.put({"type": event_type, **(data or {})})
+
     memory = None
     session_logger = None
     try:
@@ -179,39 +133,45 @@ def _run_research(session_id: str, objective: str, mode: str,
             vector_store_path=str(base_dir / config.vector_store_path),
             enable_cross_session_memory=config.enable_cross_session_memory,
         )
-        gateway = ModelGateway(config=config, session_id=session_id, log_dir=logs_root)
+        session_logger = SessionLogger(
+            log_dir=logs_root, session_id=session_id,
+            mode="fast" if mode == "fast" else config.mode,
+        )
+        services = GraphServices(
+            config=config, memory=memory,
+            session_logger=session_logger, emit=emit,
+        )
+        checkpointer = get_checkpointer(base_dir=str(base_dir))
+        invoke_config = {
+            "configurable": {"thread_id": session_id},
+            "recursion_limit": 600,
+            "run_name": f"aro-{mode}",
+        }
 
         _session_status[session_id] = {"status": "running", "objective": objective}
 
         if mode == "fast":
-            # Fast mode: single-pass async pipeline (15-30s target)
-            import asyncio
-            from runtime.event_bus import EventBus
-            from agents.fast_orchestrator import FastOrchestrator
-
-            event_bus = EventBus()
-            fast_orch = FastOrchestrator(config, memory, gateway, event_bus)
-            report = asyncio.run(fast_orch.run(objective))
-
-            # Persist report to disk so /api/sessions and /api/report can find it
-            session_logger = SessionLogger(log_dir=logs_root, session_id=session_id, mode="fast")
-            session_logger.save_final_report(report)
-
-            # Push completion to SSE queue
-            report_data = report.model_dump() if hasattr(report, 'model_dump') else report.__dict__
-            queue.put({"type": "complete", "report": report_data})
-        else:
-            # Standard mode: iterative multi-agent pipeline
-            session_logger = SSESessionLogger(
-                log_dir=logs_root,
-                session_id=session_id,
-                mode=config.mode,
-                queue=queue,
+            graph = build_fast_graph(services, checkpointer=checkpointer)
+            graph.invoke(
+                {"objective": objective, "tokens_used": 0, "started_at": time.time()},
+                invoke_config,
             )
-            orchestrator = Orchestrator(config, memory, gateway, session_logger)
-            orchestrator._sse_queue = queue
-
-            report = orchestrator.run(research_objective=objective, mode=mode)
+        else:
+            memory.create_session(objective, mode)
+            graph = build_research_graph(services, checkpointer=checkpointer)
+            # The web UI has no interrupt channel, so hitl is always False
+            # here — "interactive" behaves like autonomous, exactly as in v2.
+            graph.invoke(
+                {
+                    "objective": objective,
+                    "mode": mode,
+                    "hitl": False,
+                    "iteration": 1,
+                    "tokens_used": 0,
+                    "last_token_snapshot": 0,
+                },
+                invoke_config,
+            )
 
         # completed_at is required for _evict_old_sessions — without it,
         # successful sessions are never evicted (memory leak).
