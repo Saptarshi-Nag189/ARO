@@ -62,3 +62,4 @@ ui/stitch_*.html
 *.tfstate
 *.tfstate.*
 *.tfvars
+data/

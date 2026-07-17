@@ -4,7 +4,7 @@ Claim Schemas
 Atomic claim data model with deduplication support.
 """
 
-from datetime import datetime
+from datetime import datetime, timezone
 from typing import List, Optional
 
 from pydantic import BaseModel, Field
@@ -31,7 +31,7 @@ class Claim(BaseModel):
         description="Weight derived from source credibility"
     )
     timestamp: datetime = Field(
-        default_factory=datetime.utcnow,
+        default_factory=lambda: datetime.now(timezone.utc),
         description="When the claim was created or last updated"
     )
     merged_from: Optional[List[str]] = Field(

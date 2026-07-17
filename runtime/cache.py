@@ -9,39 +9,46 @@ re-fetching identical queries within the TTL window.
 """
 
 import hashlib
+import threading
 import time
 from typing import Any, Optional
 
 
 class TTLCache:
-    """In-process cache with per-key TTL expiration."""
+    """In-process cache with per-key TTL expiration. Thread-safe: it is
+    shared across search worker threads and graph nodes."""
 
     def __init__(self, default_ttl: int = 3600):
         self._store: dict[str, tuple[Any, float]] = {}
         self._ttl = default_ttl
+        self._lock = threading.Lock()
 
     def get(self, key: str) -> Optional[Any]:
         """Get a value by key. Returns None if expired or missing."""
-        entry = self._store.get(key)
-        if entry is None:
-            return None
-        value, expires_at = entry
-        if time.time() > expires_at:
-            del self._store[key]
-            return None
-        return value
+        with self._lock:
+            entry = self._store.get(key)
+            if entry is None:
+                return None
+            value, expires_at = entry
+            if time.time() > expires_at:
+                self._store.pop(key, None)
+                return None
+            return value
 
     def set(self, key: str, value: Any, ttl: int = None) -> None:
         """Set a value with optional custom TTL."""
-        self._store[key] = (value, time.time() + (ttl or self._ttl))
+        with self._lock:
+            self._store[key] = (value, time.time() + (ttl or self._ttl))
 
     def invalidate(self, key: str) -> None:
         """Remove a specific key."""
-        self._store.pop(key, None)
+        with self._lock:
+            self._store.pop(key, None)
 
     def clear(self) -> None:
         """Remove all entries."""
-        self._store.clear()
+        with self._lock:
+            self._store.clear()
 
     @staticmethod
     def hash_key(*args) -> str:
@@ -53,7 +60,5 @@ class TTLCache:
         return len(self._store)
 
 
-# Singleton instances used across the application
-search_cache = TTLCache(default_ttl=3600)     # 1 hour for web search results
-embedding_cache = TTLCache(default_ttl=7200)  # 2 hours for embeddings
-llm_response_cache = TTLCache(default_ttl=1800)  # 30 min for identical LLM prompts (retries)
+# Singleton instance used across the application
+search_cache = TTLCache(default_ttl=3600)  # 1 hour for web search results

@@ -1,64 +1,45 @@
 # CLAUDE.md — ARO (Autonomous Research Operator)
 
-Context for AI-assisted sessions working on this repo. Last updated: July 2026, on branch `claude/project-review-docs-pzlbnk`.
+Context for AI-assisted sessions working on this repo. Last updated: July 2026 (post-LangGraph v3 rewrite + post-audit cleanup).
 
 ## What this project is
 
-Multi-agent AI research engine. A deterministic **Orchestrator** (`agents/orchestrator.py`, ~1,100 lines — the god class) runs an iterative loop: Plan → Web Search → Research → Claim Extraction → Skeptic ‖ Synthesis → [Innovation] ‖ Reflection → metrics → termination check. Seven LLM agents (subclasses of `agents/base_agent.py`) call OpenRouter free-tier models through `runtime/model_gateway.py` (`ModelGateway`), which enforces Pydantic-schema JSON output with retry-with-correction, per-model API-key routing (`config.py: get_api_key_for_model`), and token accounting.
+Multi-agent AI research engine, **v3 = LangGraph execution core**. Every run is a checkpointed `StateGraph` execution: Plan → Web Search → Research → Claim Extraction → (Skeptic ‖ Synthesis) → integrate → [Innovation ‖ Reflection] → metrics → deterministic termination check. Seven agents in `agents/` are now pure *specifications* (name + system prompt + Pydantic output schema); execution lives in `graph/`:
 
-- **Memory**: SQLite via `memory/memory_service.py` facade (guardrails: no claim without source, no hypothesis without supporting claims); composite PKs `(session_id, id)` with in-place legacy migration in `memory/db.py`; ChromaDB vector store for cross-session memory; TTL caches in `runtime/cache.py`.
-- **Scoring**: `evaluation/` — hypothesis confidence, epistemic risk, novelty; `TerminationChecker` decides loop exit deterministically (LLM reflection is advisory only).
-- **Entry points**: `main.py` (CLI, click), `app.py` (Flask + SSE + React dashboard in `ui/`, built with Vite/Tailwind), `agents/fast_orchestrator.py` (single-pass "fast mode").
-- **Search**: `tools/web_search.py` — 5 free engines (DDG, Semantic Scholar, arXiv, OpenAlex, Wikipedia), no keys needed.
+- `graph/graph.py` — StateGraph assembly (research + fast graphs); `graph/state.py` — typed checkpointable state with reducers; `graph/nodes.py` — node implementations (single-writer discipline: only fan-in nodes touch the DB); `graph/fast_nodes.py` — single-pass fast mode; `graph/models.py` — model factory (OpenRouter / Bedrock / `ARO_FAKE_MODEL=1` deterministic offline fake); `graph/structured.py` — schema-validated invocation with correction retries; `graph/prompts.py` — all prompts (eval-gated in CI); `graph/checkpoint.py` — SqliteSaver (default `data/aro_checkpoints.db`) / PostgresSaver via `ARO_CHECKPOINT_URI`.
+- **Interactive mode is a real LangGraph `interrupt()`** — continue / stop / redirect from the CLI (`main.py: _handle_interrupts`); `--resume --session-id X` resumes any run from its checkpoint.
+- **Memory**: SQLite via `memory/memory_service.py` facade (guardrails: no claim without source, no unsupported hypothesis; source dedup by URL; claim merges track `corroborating_source_ids`); default DB `data/aro_memory.db`; ChromaDB vector store for cross-session recall (read path injects prior knowledge into planner/research prompts); composite PKs `(session_id, id)` with in-place migration in `memory/db.py`.
+- **Scoring**: `evaluation/` — confidence, risk, novelty + `TerminationChecker` (max-iterations ceiling checked first; LLM reflection is advisory only).
+- **Entry points**: `main.py` (CLI), `app.py` (Flask + SSE + React `ui/`), `mcp_server/` (ARO as MCP tools `deep_research`/`fast_research`, stdio + HTTP), `evals/` (LangSmith eval suite, gates CI), `infra/terraform/` (optional AWS stack).
+- **Search**: `tools/web_search.py` — 5 free engines, SSRF-guarded (resolve-then-verify); `tools/prior_art_tool.py` — real Semantic Scholar + OpenAlex scan with lexical-overlap similarity.
 
-## Key facts / gotchas learned in the July 2026 review
+## History / audit trail
 
-Full audit with file/line references: **`docs/project_review.md`** — read it before making significant changes. Highlights:
+- `docs/project_review.md` — full July 2026 audit of v2 with fix status (all findings closed; some fixes later superseded by the v3 rewrite, which ported the important ones: contradiction dedupe + resolution, novelty recompute, guardrail no-fabrication, source dedup/corroboration).
+- `docs/langgraph_migration.md` — the v2 → v3 story.
+- Review artifact (phone-friendly): https://claude.ai/code/artifact/9e00955a-e836-479d-b64b-040ca8d2c187
 
-- `app.py` monkey-patches `Orchestrator._run_agent_logged` for SSE events; session progress state (`_progress_queues`, `_session_status`) is **in-process**, so gunicorn must stay at `-w 1` (Dockerfile is configured that way deliberately).
-- `agents/prompt_builder.py`, `agents/data_processor.py`, `evaluation/metrics_engine.py` are **dead code** — refactored copies of orchestrator internals, never imported, already drifting. Adopt-or-delete. Same for `runtime/event_bus.py` (zero subscribers), `ModelGateway.call_async_stream`, the async search wrappers in `web_search.py`, `llm_response_cache`/`embedding_cache`, and `tools/search_tool.py` (placeholder that fabricates example.com URLs — do not wire into agents).
-- Cross-session ChromaDB memory is **write-only**: `MemoryService.get_prior_knowledge()`/`get_prior_hypotheses()` have no callers. The README feature claim is aspirational.
-- `tools/prior_art_tool.py` is a **stub** (always returns similarity 0.5, empty references).
-- `resolved_contradictions` counter and `resolve_knowledge_gap()` have **no writers/callers** — contradiction/gap resolution never happens, biasing risk up and novelty down (open finding 2.5; fixing it requires agent-contract/schema changes).
-- Interactive mode is a no-op (logs "override not connected").
-- `requirements.txt` pins `google-adk` and `sqlalchemy` which are **never imported**; `pytest==7.0` with **zero tests in the repo**; GitHub Dependabot reports ~13 vulnerabilities (2 critical) on main.
-- Skeptic `CredibilityChallenge.target_id` is only looked up as a *source*, but the skeptic prompt only shows *claim* IDs, so most challenges are silently dropped (finding 3.4).
+## Post-rewrite cleanup already done (this branch)
 
-## Fixes already applied (branch `claude/project-review-docs-pzlbnk`)
+- Deleted dead modules: `runtime/event_bus.py`, `evaluation/metrics_engine.py`, `tools/search_tool.py` (placeholder that fabricated example.com URLs), the unused async search wrappers in `web_search.py`, and the unused `embedding_cache`/`llm_response_cache` singletons. `schemas/search_result.py` is ALIVE (registered with the checkpoint serde) — don't delete it.
+- Skeptic credibility challenges fixed (old finding 3.4): the skeptic prompt now lists source IDs alongside claim IDs, and `graph/nodes.py: integrate` applies `target_id` to whichever it matches (`MemoryService.update_claim_credibility` added for the claim path).
+- `datetime.utcnow()` fully swept to `datetime.now(timezone.utc)` (schemas, memory, logger). New timestamps are timezone-aware ISO strings; old rows may be naive — don't compare parsed datetimes across that boundary without normalizing.
+- Both SQLite files live under `data/` (gitignored, volume-mounted as `aro_data` in docker-compose; dirs auto-created).
+- `/api/run` has a per-IP sliding-window rate limit (`ARO_RATE_LIMIT_PER_MIN`, default 5/min) on top of the concurrency cap.
+- `TTLCache` is thread-safe (lock) — it's shared across search worker threads.
+- README has a Privacy section (maintainer's voice, deliberately lighthearted) — keep its tone if editing.
 
-Commits `53d140f` + `b752d97` (P0 + safe P1):
+## Gotchas
 
-- `max_iterations` enforced as first check in `TerminationChecker.should_terminate()` (loop previously unbounded; budget check is still effectively dead — cost never recorded).
-- Fixed `ValueError` f-string crash + duplicate `except` in `Orchestrator._generate_conclusion` fallback.
-- Added `ModelGateway.call_text()` (plain-text, key routing, retries, token accounting); conclusion generation now goes through the gateway instead of raw `requests.post` with the default key.
-- Novelty recomputed after Innovation runs (`Orchestrator._compute_novelty`); was permanently capped at 0.5.
-- Guardrails no longer fabricate evidence: unknown-source claims and unsupported hypotheses are dropped with warnings (previously reattributed to first source / first claim).
-- `completed_at` set on successful sessions → `_evict_old_sessions` works; `mode`/`runtime_mode` validated in `POST /api/run`.
-- `SessionLogger.close()` added and called from `app.py`/`main.py` (was leaking a FileHandler per session on the shared `"aro"` logger, duplicating logs across session files).
-- Added `.dockerignore` (previously `.env`, `*.db`, `logs/`, `.git` were baked into images via `COPY . .`); Dockerfile now runs as non-root user `aro`, gunicorn `-w 1 --threads 16`.
-
-Later commits (rest of P1 + P2/P3 highlights):
-
-- **Contradiction/gap resolution wired end-to-end (2.5)**: `SynthesisOutput.resolved_contradictions` + `resolved_gap_ids`; orchestrator tracks `seen_contradiction_pairs`/`open_contradiction_pairs` (frozensets — dedupes skeptic re-reports), only accepts resolutions for pairs/IDs it actually showed the model; synthesis prompt lists open contradictions + unresolved gaps.
-- **Cross-session memory read path (2.9)**: `Orchestrator._build_prior_knowledge_block()` injects vector-store matches into the planner context and iteration-1 research prompt.
-- **Real prior-art scan (2.11)**: `PriorArtTool.scan` queries Semantic Scholar + OpenAlex, scores lexical overlap (top-3 mean, clamped to [0.15, 0.90]); falls back to neutral 0.5 offline.
-- **Source dedup + corroboration (2.14)**: `SourceRegistry.add_source` dedupes by URL (title for URL-less); claims gained `corroborating_source_ids` (additive `_ensure_column` migration in `db.py`); merges record cross-source corroboration; single-source confidence cap counts corroborating sources.
-- **UI auth (2.13)**: `ui/src/api.js` (`apiFetch`/`streamUrl`); key stored via `localStorage.setItem('aro_api_key', …)`; server accepts `api_key` query param (EventSource can't send headers).
-- **Tests + CI**: `tests/` (65 tests, no network/chromadb needed) + `.github/workflows/ci.yml`. Run with `python -m pytest -q`.
-- **Deps**: dropped `google-adk`/`sqlalchemy` (never imported), `duckduckgo-search`→`ddgs`, `pytest>=8`.
-- **SSRF (2.20)**: `_is_safe_url` now resolves hostnames and requires every address to be public.
-
-## Top remaining work (see docs/project_review.md fix-status note)
-
-1. Interactive mode: implement pause/continue or remove from docs/CLI (currently a no-op).
-2. Adopt-or-delete dead modules: `agents/prompt_builder.py`, `agents/data_processor.py`, `evaluation/metrics_engine.py`, `runtime/event_bus.py` (replace app.py monkey-patching), `ModelGateway.call_async_stream`, async search wrappers, unused caches, `tools/search_tool.py`.
-3. Skeptic credibility challenges: `target_id` only looked up as a source but prompt shows claim IDs — most challenges silently dropped (finding 3.4).
-4. `datetime.utcnow()` sweep (mind naive-vs-aware mixing with stored ISO strings), SQLite on a Docker volume, rate limiting, refresh remaining Dependabot pins.
+- `app.py` session progress state (`_progress_queues`, `_session_status`) is **in-process** → gunicorn must stay `-w 1` (Dockerfile is set up that way on purpose).
+- `ARO_FAKE_MODEL=1` drives the entire graph offline and deterministically — use it for tests/demos; CI relies on it.
+- Web UI auth: `ARO_API_KEY` + `localStorage.setItem('aro_api_key', …)`; SSE uses an `api_key` query param (EventSource can't send headers).
+- The eval gate (`evals/`, `eval-gate.yml`) can fail PRs on answer-quality regressions when LangSmith secrets are configured; `deploy.yml` self-skips without AWS secrets.
+- Interactive mode via the web API behaves like autonomous (HITL interrupts are CLI-only for now).
 
 ## Conventions & verification
 
-- Python 3.10+; no formatter/linter configured.
-- All LLM calls must go through `ModelGateway` (use `call`, `call_async`, or `call_text`) — never raw HTTP.
-- All DB mutations go through `MemoryService` — agents never touch SQLite directly.
-- Verify with `python -m pytest -q` (works with just `pydantic requests networkx python-dotenv click flask flask-cors pytest`; chromadb optional — the container's system `blinker` may need `pip install --ignore-installed blinker`).
-- Development branch: `claude/project-review-docs-pzlbnk`. Review artifact (phone-friendly): https://claude.ai/code/artifact/9e00955a-e836-479d-b64b-040ca8d2c187
+- Agents never touch the DB; all mutations go through `MemoryService`, and only single-writer graph nodes call it.
+- All model calls go through `graph/models.py` + `graph/structured.py` — never raw HTTP.
+- Verify with `ARO_FAKE_MODEL=1 python -m pytest -q` (offline, no keys). The LangGraph stack (`langgraph`, `langchain-core`, `langgraph-checkpoint-sqlite`) must be installed; chromadb optional.
+- Development branch: `claude/project-review-docs-pzlbnk`.

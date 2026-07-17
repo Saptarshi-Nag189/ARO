@@ -4,7 +4,7 @@ Knowledge Gap Schemas
 Model for tracking unresolved research gaps.
 """
 
-from datetime import datetime
+from datetime import datetime, timezone
 from typing import List, Optional
 
 from pydantic import BaseModel, Field
@@ -31,7 +31,7 @@ class KnowledgeGap(BaseModel):
         default=False,
         description="Whether this gap has been resolved"
     )
-    created_at: datetime = Field(default_factory=datetime.utcnow)
+    created_at: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))
     resolved_at: Optional[datetime] = Field(None)
 
 

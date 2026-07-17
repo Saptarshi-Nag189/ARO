@@ -304,7 +304,9 @@ class ResearchNodes:
     def skeptic(self, state: ResearchState) -> Dict[str, Any]:
         """Pure LLM branch: contradictions, credibility challenges, gaps."""
         prompt = prompts.build_skeptic_prompt(
-            state["claims_snapshot"], state["hypotheses_snapshot"]
+            state["claims_snapshot"],
+            state["hypotheses_snapshot"],
+            sources=self.memory.get_all_sources(),
         )
         output, tokens, entry = self._run_agent(
             "skeptic", prompt, state.get("iteration", 1)
@@ -356,6 +358,8 @@ class ResearchNodes:
 
         for challenge in skeptic_output.credibility_challenges:
             try:
+                # target_id may name a source or a claim (the skeptic prompt
+                # lists both) — apply the adjustment to whichever it matches.
                 current_source = self.memory.get_source(challenge.target_id)
                 if current_source:
                     new_score = max(
@@ -363,6 +367,19 @@ class ResearchNodes:
                         current_source.credibility_score + challenge.suggested_adjustment,
                     )
                     self.memory.update_source_credibility(challenge.target_id, new_score)
+                    continue
+                claim = self.memory.get_claim(challenge.target_id)
+                if claim:
+                    new_weight = max(
+                        0.0,
+                        claim.credibility_weight + challenge.suggested_adjustment,
+                    )
+                    self.memory.update_claim_credibility(challenge.target_id, new_weight)
+                else:
+                    logger.debug(
+                        "Credibility challenge target '%s' matches no source "
+                        "or claim — dropped.", challenge.target_id,
+                    )
             except Exception as exc:
                 logger.debug("Could not apply credibility challenge: %s", exc)
 

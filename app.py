@@ -50,6 +50,27 @@ MIN_ITERATIONS = 1
 ALLOWED_MODES = {"autonomous", "interactive", "innovation", "fast"}
 ALLOWED_RUNTIME_MODES = {"production", "audit"}
 
+# SEC: simple per-IP sliding-window rate limit for research launches.
+# In-process is sufficient — the server deliberately runs a single worker.
+RATE_LIMIT_WINDOW_SECONDS = 60
+RATE_LIMIT_MAX_RUNS = int(os.getenv("ARO_RATE_LIMIT_PER_MIN", "5"))
+_run_request_times: dict[str, list] = {}
+
+
+def _rate_limited(client_ip: str) -> bool:
+    """True if this IP has started too many runs inside the window."""
+    now = time.time()
+    recent = [
+        t for t in _run_request_times.get(client_ip, [])
+        if now - t < RATE_LIMIT_WINDOW_SECONDS
+    ]
+    if len(recent) >= RATE_LIMIT_MAX_RUNS:
+        _run_request_times[client_ip] = recent
+        return True
+    recent.append(now)
+    _run_request_times[client_ip] = recent
+    return False
+
 
 @app.before_request
 def require_api_key():
@@ -203,6 +224,12 @@ def _run_research(session_id: str, objective: str, mode: str,
 
 @app.route("/api/run", methods=["POST"])
 def start_research():
+    # SEC: per-IP rate limit — each run consumes LLM quota
+    if _rate_limited(request.remote_addr or "unknown"):
+        return jsonify({
+            "error": "rate limit exceeded, try again in a minute"
+        }), 429
+
     # SEC-006: Cap concurrent sessions to prevent DoS
     active = sum(
         1 for s in _session_status.values()

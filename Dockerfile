@@ -38,7 +38,7 @@ COPY --from=ui-builder /ui/dist /app/ui/dist
 
 # Create necessary directories and drop root privileges
 RUN useradd --create-home --shell /usr/sbin/nologin aro && \
-    mkdir -p /app/logs /app/vector_store && \
+    mkdir -p /app/logs /app/vector_store /app/data && \
     chown -R aro:aro /app
 USER aro
 

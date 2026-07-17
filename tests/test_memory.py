@@ -120,3 +120,21 @@ def test_session_scoping(memory, tmp_path):
         assert other.get_all_claims() == []
     finally:
         other.close()
+
+
+def test_update_claim_credibility(memory):
+    from schemas.sources import Source
+    src = memory.add_source(Source(title="A", url="https://x.org/a"))
+    claim = memory.add_claim(_claim(source_id=src.id))
+
+    assert memory.update_claim_credibility(claim.id, 0.35) is True
+    assert abs(memory.get_claim(claim.id).credibility_weight - 0.35) < 1e-6
+
+    # Clamped to [0, 1]
+    memory.update_claim_credibility(claim.id, -5.0)
+    assert memory.get_claim(claim.id).credibility_weight == 0.0
+    memory.update_claim_credibility(claim.id, 7.0)
+    assert memory.get_claim(claim.id).credibility_weight == 1.0
+
+    # Unknown IDs are rejected
+    assert memory.update_claim_credibility("claim_nope", 0.5) is False

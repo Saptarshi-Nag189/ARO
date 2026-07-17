@@ -87,9 +87,12 @@ def get_checkpointer(base_dir: Optional[str] = None) -> BaseCheckpointSaver:
 
     from langgraph.checkpoint.sqlite import SqliteSaver
 
-    path = os.getenv("ARO_CHECKPOINT_SQLITE", "aro_checkpoints.db")
+    path = os.getenv("ARO_CHECKPOINT_SQLITE", "data/aro_checkpoints.db")
     if base_dir and not os.path.isabs(path):
         path = os.path.join(base_dir, path)
+    parent = os.path.dirname(path)
+    if parent:
+        os.makedirs(parent, exist_ok=True)
     # LangGraph nodes may execute on worker threads; the saver serializes
     # access internally, so cross-thread use of this connection is safe.
     conn = sqlite3.connect(path, check_same_thread=False)

@@ -9,7 +9,7 @@ import json
 import logging
 import os
 import time
-from datetime import datetime
+from datetime import datetime, timezone
 from typing import Any, Dict, List, Optional
 
 
@@ -37,7 +37,7 @@ class IterationLog:
         """Log a single agent call within this iteration."""
         self.agent_logs.append({
             "agent": agent_name,
-            "timestamp": datetime.utcnow().isoformat(),
+            "timestamp": datetime.now(timezone.utc).isoformat(),
             "inputs": self._truncate(self._safe_serialize(inputs)),
             "outputs": self._truncate(self._safe_serialize(outputs)),
             "token_usage": token_usage,
@@ -94,7 +94,7 @@ class IterationLog:
         return {
             "session_id": self.session_id,
             "iteration": self.iteration,
-            "timestamp": datetime.utcnow().isoformat(),
+            "timestamp": datetime.now(timezone.utc).isoformat(),
             "agent_logs": self.agent_logs,
             "metrics": self.metrics,
         }

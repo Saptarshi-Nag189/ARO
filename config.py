@@ -91,7 +91,7 @@ class AROConfig:
     stale_iteration_window: int = 2
 
     # --- Database ---
-    db_path: str = "aro_memory.db"
+    db_path: str = "data/aro_memory.db"
 
     # --- Logging ---
     log_dir: str = "logs"

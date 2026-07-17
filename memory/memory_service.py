@@ -8,7 +8,7 @@ No agent writes to DB directly — only through MemoryService.
 import json
 import sqlite3
 import uuid
-from datetime import datetime
+from datetime import datetime, timezone
 from typing import Dict, List, Optional
 
 from memory.db import initialize_database
@@ -62,7 +62,7 @@ class MemoryService:
         """Update session status."""
         self.conn.execute(
             "UPDATE sessions SET status = ?, updated_at = ? WHERE id = ?",
-            (status, datetime.utcnow().isoformat(), self.session_id),
+            (status, datetime.now(timezone.utc).isoformat(), self.session_id),
         )
         self.conn.commit()
 
@@ -119,6 +119,10 @@ class MemoryService:
     def get_all_claims(self) -> List[Claim]:
         """Get all claims."""
         return self.claim_store.get_all_claims()
+
+    def update_claim_credibility(self, claim_id: str, new_weight: float) -> bool:
+        """Update a claim's credibility weight (skeptic challenges)."""
+        return self.claim_store.update_credibility(claim_id, new_weight)
 
     def count_claims(self) -> int:
         """Count total claims."""
@@ -212,7 +216,7 @@ class MemoryService:
             SET resolved = 1, resolved_at = ?
             WHERE id = ? AND session_id = ?
             """,
-            (datetime.utcnow().isoformat(), gap_id, self.session_id),
+            (datetime.now(timezone.utc).isoformat(), gap_id, self.session_id),
         )
         self.conn.commit()
         return cursor.rowcount > 0

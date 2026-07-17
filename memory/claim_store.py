@@ -8,7 +8,7 @@ Uses difflib.SequenceMatcher for similarity threshold (0.85).
 import json
 import sqlite3
 import uuid
-from datetime import datetime
+from datetime import datetime, timezone
 from difflib import SequenceMatcher
 from typing import List, Optional
 
@@ -99,7 +99,7 @@ class ClaimStore:
                 new_evidence_count,
                 json.dumps(merged_from),
                 json.dumps(corroborating),
-                datetime.utcnow().isoformat(),
+                datetime.now(timezone.utc).isoformat(),
                 existing.id,
                 self.session_id,
             ),
@@ -167,6 +167,20 @@ class ClaimStore:
             (self.session_id, source_id),
         ).fetchall()
         return [self._row_to_claim(row) for row in rows]
+
+    def update_credibility(self, claim_id: str, new_weight: float) -> bool:
+        """Update a claim's credibility weight (clamped to [0, 1])."""
+        cursor = self.conn.execute(
+            "UPDATE claims SET credibility_weight = ? "
+            "WHERE id = ? AND session_id = ?",
+            (
+                round(max(0.0, min(1.0, new_weight)), 6),
+                claim_id,
+                self.session_id,
+            ),
+        )
+        self.conn.commit()
+        return cursor.rowcount > 0
 
     def delete_claim(self, claim_id: str) -> bool:
         """Delete a claim by ID."""

@@ -20,6 +20,7 @@ services:
     volumes:
       - ./logs:/app/logs
       - vector_data:/app/vector_store
+      - aro_data:/app/data   # SQLite memory + checkpoints survive rebuilds
     restart: unless-stopped
     healthcheck:
       test: ["CMD", "curl", "-f", "http://localhost:5000/api/health"]
@@ -39,8 +40,11 @@ services:
     volumes:
       - ./logs:/app/logs
       - vector_data:/app/vector_store
+      - aro_data:/app/data
     restart: unless-stopped
 
 volumes:
   vector_data:
+    driver: local
+  aro_data:
     driver: local

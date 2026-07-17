@@ -4,7 +4,7 @@ Source Schemas
 Source registry data model.
 """
 
-from datetime import datetime
+from datetime import datetime, timezone
 from typing import List, Optional
 
 from pydantic import BaseModel, Field
@@ -35,7 +35,7 @@ class Source(BaseModel):
         None, description="Brief summary of the source content"
     )
     retrieved_at: datetime = Field(
-        default_factory=datetime.utcnow,
+        default_factory=lambda: datetime.now(timezone.utc),
         description="When this source was retrieved"
     )
 

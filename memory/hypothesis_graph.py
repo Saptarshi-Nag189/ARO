@@ -8,7 +8,7 @@ claim → hypothesis and hypothesis → hypothesis relationships.
 import json
 import sqlite3
 import uuid
-from datetime import datetime
+from datetime import datetime, timezone
 from typing import Dict, List, Optional, Set, Tuple
 
 import networkx as nx
@@ -65,7 +65,7 @@ class HypothesisGraph:
 
     def update_hypothesis(self, hypothesis: Hypothesis) -> Hypothesis:
         """Update an existing hypothesis."""
-        hypothesis.updated_at = datetime.utcnow()
+        hypothesis.updated_at = datetime.now(timezone.utc)
 
         self.conn.execute(
             """

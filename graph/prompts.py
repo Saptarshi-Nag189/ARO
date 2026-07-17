@@ -71,7 +71,7 @@ def build_extraction_prompt(research_output, sources) -> str:
     )
 
 
-def build_skeptic_prompt(claims, hypotheses) -> str:
+def build_skeptic_prompt(claims, hypotheses, sources=None) -> str:
     claims_text = "\n".join(
         f"  [{c.id}] {c.subject} --{c.relation}--> {c.object} "
         f"(confidence: {c.confidence_estimate}, credibility: {c.credibility_weight})"
@@ -81,12 +81,24 @@ def build_skeptic_prompt(claims, hypotheses) -> str:
         f"  [{h.id}] {h.statement} (confidence: {h.confidence}, status: {h.status})"
         for h in hypotheses
     ) if hypotheses else "  (No hypotheses yet)"
+    # Sources are listed so credibility_challenges can target either a
+    # claim ID or a source ID — previously only claim IDs were shown but
+    # only source IDs were acted on, so most challenges were dropped.
+    sources_text = "\n".join(
+        f"  [{s.id}] {s.title} (credibility: {s.credibility_score}, "
+        f"type: {s.source_type})"
+        for s in (sources or [])
+    ) or "  (No sources registered)"
 
     return (
         f"Critically evaluate the following claims and hypotheses.\n\n"
         f"Claims:\n{claims_text}\n\n"
         f"Hypotheses:\n{hyp_text}\n\n"
-        f"Identify contradictions, credibility issues, and knowledge gaps."
+        f"Sources:\n{sources_text}\n\n"
+        f"Identify contradictions, credibility issues, and knowledge gaps.\n"
+        f"For credibility_challenges, target_id may be a claim ID (to lower "
+        f"that claim's credibility_weight) or a source ID (to lower that "
+        f"source's credibility_score) — use the IDs exactly as listed above."
     )
 
 

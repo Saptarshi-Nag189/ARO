@@ -26,6 +26,7 @@ A multi-agent AI research engine that autonomously plans research strategies, se
 - [Testing](#testing)
 - [Project structure](#project-structure)
 - [Guardrails](#guardrails)
+- [Privacy](#privacy)
 
 ---
 
@@ -291,7 +292,7 @@ Full walkthrough, cost table, and teardown: [`docs/deployment_aws.md`](docs/depl
 |---|---|---|
 | `autonomous` | Fully self-directed iterative research loop | 2–5 min |
 | `fast` | Single-pass speculative research (seed search ‖ planning) | 15–30 s |
-| `interactive` | Real `interrupt()` after each iteration — continue / stop / redirect | you decide |
+| `interactive` | Real `interrupt()` after each iteration — continue / stop / redirect | as fast as you type |
 | `innovation` | Prior-art scan, novelty scoring, patent-grade proposals | 3–7 min |
 
 ```
@@ -313,6 +314,8 @@ Full walkthrough, cost table, and teardown: [`docs/deployment_aws.md`](docs/depl
 | `ARO_CHECKPOINT_URI` | Postgres checkpointer (default: SQLite) |
 | `LANGSMITH_TRACING` / `LANGSMITH_API_KEY` | full observability |
 | `ARO_API_KEY` | protect the web API (dashboard: `localStorage.setItem('aro_api_key', '<key>')`; SSE passes it as an `api_key` query param) |
+| `ARO_CHECKPOINT_SQLITE` | checkpoint DB path (default `data/aro_checkpoints.db` — volume-mounted in Docker, next to `data/aro_memory.db`) |
+| `ARO_RATE_LIMIT_PER_MIN` | max research launches per IP per minute on `/api/run` (default 5) |
 | `ARO_HOST` / `ARO_PORT` / `ARO_MAX_CONCURRENT` | server tuning |
 
 ---
@@ -355,7 +358,7 @@ aro/
 ├── evaluation/                # confidence / risk / novelty math, termination
 ├── tools/                     # 5-engine web search, prior-art scan
 ├── schemas/                   # strict Pydantic contracts for everything
-├── runtime/                   # cache, event bus, structured session logs
+├── runtime/                   # TTL cache, structured session logs
 ├── tests/                     # 41 offline tests (fake model)
 ├── ui/                        # React + Vite dashboard (live agent map)
 ├── .github/workflows/         # ci.yml · eval-gate.yml · deploy.yml
@@ -377,6 +380,20 @@ aro/
 - ✅ Cross-source contradictions become opposing evidence on hypotheses
 - ✅ Single-source hypotheses capped at 0.85 confidence
 - ✅ Termination is deterministic — agents only ever *advise* stopping
+- ✅ A Skeptic agent is employed full-time to disagree with everyone (it is very good at its job)
+
+---
+
+## Privacy
+
+Short version: **I am not interested in you or your data. You can keep it with yourself. And I can't host a server.**
+
+Slightly longer version:
+
+- Everything runs on your machine. Sessions, claims, hypotheses, checkpoints — all of it lives in local SQLite files (`data/`), a local ChromaDB folder (`vector_store/`), and `logs/`. Delete those and ARO forgets you ever met.
+- No telemetry, no accounts, no analytics, no phoning home. There is no home to phone (see: "I can't host a server").
+- The only things that leave your machine are the model calls to OpenRouter (or Bedrock, if you wired that up yourself) and web-search queries to the five public engines in `tools/web_search.py`. If your research objective is confidential, remember you are literally asking the internet about it.
+- Default models are OpenRouter's free tier — so even your billing data stays boring.
 
 ---
 

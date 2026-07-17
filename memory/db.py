@@ -4,6 +4,7 @@ Database Initialization
 SQLite connection factory, schema creation, and in-place legacy migration.
 """
 
+import os
 import sqlite3
 from typing import Dict, List
 
@@ -175,6 +176,9 @@ def get_connection(db_path: str = "aro_memory.db") -> sqlite3.Connection:
     threads. All writes go through single-writer nodes (never two nodes
     writing concurrently), and WAL mode handles concurrent readers.
     """
+    parent = os.path.dirname(db_path)
+    if parent:
+        os.makedirs(parent, exist_ok=True)
     conn = sqlite3.connect(db_path, check_same_thread=False)
     conn.row_factory = sqlite3.Row
     conn.execute("PRAGMA journal_mode=WAL")

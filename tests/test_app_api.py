@@ -110,3 +110,19 @@ def test_api_key_enforcement_and_query_param_fallback(client, monkeypatch):
     assert r.status_code == 404  # authorized, but session doesn't exist
     # Health stays open for load balancers
     assert client.get("/api/health").status_code == 200
+
+
+# ─── Rate limiting on /api/run ───────────────────────────────────────────
+
+
+def test_run_is_rate_limited_per_ip(client, monkeypatch):
+    monkeypatch.setattr(aro_app, "RATE_LIMIT_MAX_RUNS", 1)
+    monkeypatch.setattr(aro_app, "_run_request_times", {})
+
+    # First request consumes the allowance (fails validation, but counts)
+    r1 = client.post("/api/run", json={"objective": ""})
+    assert r1.status_code == 400
+    # Second request inside the window is rejected
+    r2 = client.post("/api/run", json={"objective": ""})
+    assert r2.status_code == 429
+    assert "rate limit" in r2.get_json()["error"]

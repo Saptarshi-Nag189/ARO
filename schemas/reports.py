@@ -4,7 +4,7 @@ Report Schemas
 Final report and innovation proposal data models.
 """
 
-from datetime import datetime
+from datetime import datetime, timezone
 from typing import Dict, List, Optional
 
 from pydantic import BaseModel, Field
@@ -93,7 +93,7 @@ class FinalReport(BaseModel):
     total_tokens_used: int = Field(default=0)
     total_execution_time_seconds: float = Field(default=0.0)
     termination_reason: str = Field(default="unknown")
-    created_at: datetime = Field(default_factory=datetime.utcnow)
+    created_at: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))
 
 
 class FastReport(BaseModel):
